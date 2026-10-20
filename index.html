@@ -80,6 +80,9 @@ table.stats tr[data-src]{cursor:pointer}
 .matRow{display:grid;grid-template-columns:1fr 84px 84px 26px;gap:5px;align-items:center;margin:5px 0}
 .matRow input{width:100%}
 .matHead{display:grid;grid-template-columns:1fr 84px 84px 26px;gap:5px;color:var(--muted);font-size:11px;margin-top:6px}
+.greeting{position:sticky;bottom:0;margin-top:18px;color:var(--muted);font-size:12px;line-height:1.55}
+.greeting p{margin:0}
+.greeting b{color:var(--ink);font-weight:650}
 .swatch{display:inline-block;width:10px;height:10px;border-radius:2px;border:1px solid #00000055;vertical-align:-1px;margin-right:5px}
 .kbd{background:#161310;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 4px;font-size:11px}
 .big{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
@@ -144,6 +147,7 @@ table.stats tr[data-src]{cursor:pointer}
       <button id="btnFit">Fit view</button></div>
     <p class="hint">Mouse wheel zooms. Drag empty space to pan in Pan mode,
       or hold <span class="kbd">Space</span> in any mode. <span class="kbd">Del</span> removes the selected vertex or hole.</p>
+    <div class="card greeting"><p><b>“Do I have enough planks?”</b> The question gnawed at me as I set out to lay down double herringbone in an area connected to a long and narrow corridor. What’s the optimal way to deal with this, and how can I visualize it at the same time? So, this came to be — hope you also find it useful!</p></div>
   </aside>
   <div id="stage">
     <svg id="svg"></svg>
