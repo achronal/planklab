@@ -319,8 +319,8 @@ function validateRoom(outer,holes){
   const errs=[];
   if(!outer||outer.length<3)errs.push("Draw a closed room outline (at least 3 vertices).");
   else{
-    if(polyArea(outer)<1)errs.push("Room outline has (near) zero area.");
     if(ringSelfIntersects(outer))errs.push("Room outline crosses itself — untangle it to continue.");
+    else if(polyArea(outer)<1)errs.push("Room outline has (near) zero area.");
   }
   (holes||[]).forEach((h,k)=>{
     if(h.length<3){errs.push("Hole "+(k+1)+" needs at least 3 vertices.");return;}
@@ -869,11 +869,582 @@ function assignLabelsAndStats(fill){
   sources.forEach((src,i)=>{
     const num=i+1;
     const ordered=src.ids.slice().sort((a,b)=>byId[a].fillIdx-byId[b].fillIdx||a-b);
+    const suffix=k=>k<26?String.fromCharCode(65+k):
+      String.fromCharCode(64+Math.floor(k/26))+String.fromCharCode(65+k%26);
     ordered.forEach((id,k)=>{
       byId[id].src=i;
-      byId[id].label=ordered.length>1?num+String.fromCharCode(65+k):String(num);});
+      byId[id].label=ordered.length>1?num+suffix(k):String(num);});
     src.num=num;src.ids=ordered;});
   return{sources,stats};}
+
+/* ============================================================
+   UI LAYER — rendering + input only. Every number shown comes
+   from the control layer above.
+   ============================================================ */
+let R=null;               // last compute result {fill fields, sources, stats}
+let mode="edit";          // edit | pan | drawOuter | drawHole
+let drawing=[];           // vertices of ring being drawn
+let sel=null;             // {type:'vertex'|'edge', ring:-1|holeIdx, idx}
+let highlightSrc=-1;
+let cam={cx:2100,cy:1500,k:0.15};
+let ptr={down:false,moved:0,lx:0,ly:0,dragV:null,panning:false,space:false};
+let cursorW=[0,0],snapGuide=null;
+const svg=$("svg"),stage=$("stage");
+function stageSize(){const r=stage.getBoundingClientRect();return[r.width,r.height];}
+function w2s(p){const[w,h]=stageSize();
+  return[w/2+(p[0]-cam.cx)*cam.k,h/2+(p[1]-cam.cy)*cam.k];}
+function s2w(px,py){const[w,h]=stageSize();const r=stage.getBoundingClientRect();
+  return[cam.cx+(px-r.left-w/2)/cam.k,cam.cy+(py-r.top-h/2)/cam.k];}
+function ringOf(ref){return ref===-1?S.outer:S.holes[ref];}
+function pathFrom(r){return r.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ")+" Z";}
+function cutEdgeFlags(piece,pool){
+  if(piece._cef)return piece._cef;
+  const flags=[];
+  for(let i=0;i<piece.local.length;i++){
+    const P=piece.local[i],Q=piece.local[(i+1)%piece.local.length];
+    let onStock=false;
+    for(let s=0;s<pool.local.length;s++){
+      const A=pool.local[s],B=pool.local[(s+1)%pool.local.length],e=sub(B,A);
+      if(Math.abs(cross(e,sub(P,A)))<1e-4*vlen(e)&&
+         Math.abs(cross(e,sub(Q,A)))<1e-4*vlen(e)){onStock=true;break;}}
+    flags.push(!onStock);}
+  piece._cef=flags;return flags;}
+function renderSVG(){
+  const[w,h]=stageSize();const k=cam.k;
+  const x0=cam.cx-w/2/k,x1=cam.cx+w/2/k,y0=cam.cy-h/2/k,y1=cam.cy+h/2/k;
+  let s="";
+  if($("showGrid").checked){
+    let step=100;for(const c of[100,200,500,1000,2000])if(c*k>=46){step=c;break;}
+    s+='<g stroke="#2c2822" stroke-width="'+(1/k)+'">';
+    for(let x=Math.floor(x0/step)*step;x<=x1;x+=step)
+      s+='<line x1="'+x+'" y1="'+y0+'" x2="'+x+'" y2="'+y1+'"/>';
+    for(let y=Math.floor(y0/step)*step;y<=y1;y+=step)
+      s+='<line x1="'+x0+'" y1="'+y+'" x2="'+x1+'" y2="'+y+'"/>';
+    s+="</g>";
+    s+='<g fill="#5c5546" font-size="'+(10.5/k)+'" font-family="inherit">';
+    for(let x=Math.floor(x0/step)*step;x<=x1;x+=step)
+      s+='<text x="'+(x+3/k)+'" y="'+(y0+13/k)+'">'+esc(fmtNum(x))+"</text>";
+    s+="</g>";}
+  if(R&&!R.errors.length){
+    const showLabels=$("showLabels").checked,showCut=$("showCutEdges").checked;
+    for(const p of R.pieces){
+      const pool=R.poolByKey[p.pool];
+      const fill=p.small?"#d64545":pool.color;
+      const hl=p.src===highlightSrc;
+      s+='<path d="'+pathFrom(p.world)+'" fill="'+fill+'" fill-opacity="'+
+        (p.isCut?0.92:0.78)+'" stroke="'+(hl?"#ffd98a":"#171310")+
+        '" stroke-width="'+((hl?2.6:1)/k)+'" stroke-linejoin="round"/>';
+      if(showCut&&p.isCut){
+        const fl=cutEdgeFlags(p,R.poolByKey[p.pool]);
+        for(let i=0;i<p.world.length;i++)if(fl[i]){
+          const a=p.world[i],b=p.world[(i+1)%p.world.length];
+          s+='<line x1="'+a[0]+'" y1="'+a[1]+'" x2="'+b[0]+'" y2="'+b[1]+
+            '" stroke="#ff7a45" stroke-width="'+(2.2/k)+'" stroke-linecap="round"/>';}}}
+    if(showLabels)for(const p of R.pieces){
+      const fs=Math.min(12.5/k,Math.sqrt(p.area)*0.30);
+      if(fs<3.2/k&&R.pieces.length>400)continue;
+      s+='<text x="'+p.labelPt[0]+'" y="'+p.labelPt[1]+
+        '" font-size="'+fs+'" fill="#221a10" font-weight="600" text-anchor="middle" '+
+        'dominant-baseline="central" pointer-events="none" font-family="inherit">'+
+        esc(p.label)+"</text>";}}
+  // room outline
+  if(S.outer.length>=3){
+    let d=pathFrom(S.outer);for(const hh of S.holes)d+=" "+pathFrom(hh);
+    s+='<path d="'+d+'" fill-rule="evenodd" fill="'+(S.locked?"none":"rgba(210,154,74,0.05)")+
+      '" stroke="'+(S.locked?"#8a7a5c":"#e8c98f")+'" stroke-width="'+(S.locked?1.4:2.2)/k+
+      '" pointer-events="none"/>';}
+  // drawing preview
+  if(drawing.length){
+    const pts=drawing.concat([cursorW]);
+    s+='<path d="'+pts.map((p,i)=>(i?"L":"M")+p[0]+" "+p[1]).join(" ")+
+      '" fill="none" stroke="#ffd98a" stroke-width="'+(1.8/k)+'" stroke-dasharray="'+(6/k)+" "+(4/k)+'"/>';
+    for(const p of drawing)
+      s+='<circle cx="'+p[0]+'" cy="'+p[1]+'" r="'+(4.5/k)+'" fill="#ffd98a"/>';}
+  if(snapGuide){
+    if(snapGuide.x!=null)s+='<line x1="'+snapGuide.x+'" y1="'+y0+'" x2="'+snapGuide.x+
+      '" y2="'+y1+'" stroke="#7fb069" stroke-width="'+(1.2/k)+'" stroke-dasharray="'+(5/k)+" "+(4/k)+'"/>';
+    if(snapGuide.y!=null)s+='<line x1="'+x0+'" y1="'+snapGuide.y+'" x2="'+x1+
+      '" y2="'+snapGuide.y+'" stroke="#7fb069" stroke-width="'+(1.2/k)+'" stroke-dasharray="'+(5/k)+" "+(4/k)+'"/>';}
+  s+=renderHandles(x0,y0,x1,y1);
+  svg.innerHTML='<g transform="translate('+(w/2)+" "+(h/2)+") scale("+k+
+    ") translate("+(-cam.cx)+" "+(-cam.cy)+')">'+s+"</g>";
+  $("zoomInfo").textContent="zoom "+(k*1000).toFixed(0)+" px/"+(S.units==="in"?"ft":"m")+
+    " · grid "+fmtLen(gridStep());
+  function gridStep(){let step=100;for(const c of[100,200,500,1000,2000])if(c*k>=46){step=c;break;}return step;}}
+function renderHandles(x0,y0,x1,y1){
+  if(S.locked||mode==="pan")return"";
+  const k=cam.k;let s="";
+  const rings=[{ref:-1,r:S.outer}].concat(S.holes.map((r,i)=>({ref:i,r})));
+  // selected edge highlight + angle arc
+  if(sel&&sel.type==="edge"){
+    const r=ringOf(sel.ring),a=r[sel.idx],b=r[(sel.idx+1)%r.length];
+    s+='<line x1="'+a[0]+'" y1="'+a[1]+'" x2="'+b[0]+'" y2="'+b[1]+
+      '" stroke="#ffd98a" stroke-width="'+(5/k)+'" stroke-linecap="round" opacity="0.85"/>';
+    const mid=[(a[0]+b[0])/2,(a[1]+b[1])/2];
+    s+='<text x="'+mid[0]+'" y="'+(mid[1]-8/k)+'" font-size="'+(12/k)+
+      '" fill="#ffd98a" text-anchor="middle" font-family="inherit" font-weight="600">'+
+      esc(fmtLen(vlen(sub(b,a))))+"</text>";}
+  for(const{ref,r}of rings){
+    if(r.length<2)continue;
+    for(let i=0;i<r.length;i++){
+      const p=r[i];const isSel=sel&&sel.type==="vertex"&&sel.ring===ref&&sel.idx===i;
+      s+='<circle cx="'+p[0]+'" cy="'+p[1]+'" r="'+((isSel?7:5)/k)+
+        '" fill="'+(isSel?"#ffd98a":ref===-1?"#ece5d8":"#e0a458")+
+        '" stroke="#171310" stroke-width="'+(1.4/k)+'"/>';}}
+  if(sel&&sel.type==="vertex"){
+    const r=ringOf(sel.ring),n=r.length;
+    if(n>=3){
+      const c=r[sel.idx],pv=r[(sel.idx-1+n)%n],nx=r[(sel.idx+1)%n];
+      const a1=Math.atan2(pv[1]-c[1],pv[0]-c[0]),a2=Math.atan2(nx[1]-c[1],nx[0]-c[0]);
+      const rr=40/k;
+      const sweep=(from,to,dir)=>{let d=(to-from)%(2*Math.PI);
+        if(dir>0&&d<0)d+=2*Math.PI;if(dir<0&&d>0)d-=2*Math.PI;return d;};
+      let dA=sweep(a1,a2,1);
+      const midA=a1+dA/2;
+      const test=[c[0]+Math.cos(midA)*rr*0.5,c[1]+Math.sin(midA)*rr*0.5];
+      const testRing=sel.ring===-1?r:r;
+      if(!pointInRing(test,testRing))dA=sweep(a1,a2,-1);
+      let d="";
+      for(let i=0;i<=28;i++){const a=a1+dA*i/28;
+        d+=(i?"L":"M")+(c[0]+Math.cos(a)*rr).toFixed(1)+" "+(c[1]+Math.sin(a)*rr).toFixed(1)+" ";}
+      s+='<path d="'+d+'" fill="none" stroke="#7fb069" stroke-width="'+(2/k)+'"/>';
+      const la=a1+dA/2;
+      s+='<text x="'+(c[0]+Math.cos(la)*rr*1.45)+'" y="'+(c[1]+Math.sin(la)*rr*1.45)+
+        '" font-size="'+(12.5/k)+'" fill="#a5cf9a" text-anchor="middle" font-weight="600" font-family="inherit">'+
+        interiorAngleDeg(r,sel.idx).toFixed(1)+"°</text>";}}
+  return s;}
+
+/* ---------------- UI: pointer editing ---------------- */
+function hitVertex(w){
+  const tol=11/cam.k;let best=null,bd=tol;
+  const rings=[{ref:-1,r:S.outer}].concat(S.holes.map((r,i)=>({ref:i,r})));
+  for(const{ref,r}of rings)for(let i=0;i<r.length;i++){
+    const d=vlen(sub(w,r[i]));if(d<bd){bd=d;best={ring:ref,idx:i};}}
+  return best;}
+function hitEdge(w){
+  const tol=8/cam.k;let best=null,bd=tol;
+  const rings=[{ref:-1,r:S.outer}].concat(S.holes.map((r,i)=>({ref:i,r})));
+  for(const{ref,r}of rings)for(let i=0;i<r.length;i++){
+    const d=distPtSeg(w,r[i],r[(i+1)%r.length]);
+    if(d<bd){bd=d;best={ring:ref,idx:i};}}
+  return best;}
+function hitPiece(w){
+  if(!R||R.errors.length)return null;
+  for(let i=R.pieces.length-1;i>=0;i--)
+    if(pointInRing(w,R.pieces[i].world))return R.pieces[i];
+  return null;}
+function closeDrawing(){
+  if(drawing.length<3){showBanner("An area needs at least 3 vertices — keep clicking, or Esc to cancel.");return;}
+  const ring=drawing.map(p=>[p[0],p[1]]);
+  if(mode==="drawOuter")S.outer=ring;else S.holes.push(ring);
+  drawing=[];setMode("edit");sel=null;update();}
+function showBanner(msg){
+  const b=$("banner");
+  if(msg){b.innerHTML=esc(msg);b.style.display="block";}
+  else b.style.display="none";}
+svg.addEventListener("pointerdown",e=>{
+  svg.setPointerCapture(e.pointerId);
+  const w=s2w(e.clientX,e.clientY);cursorW=w;
+  ptr.down=true;ptr.moved=0;ptr.lx=e.clientX;ptr.ly=e.clientY;ptr.dragV=null;
+  const wantPan=mode==="pan"||ptr.space||e.button===1;
+  if((mode==="drawOuter"||mode==="drawHole")&&!wantPan&&e.button===0){
+    if(drawing.length>=3&&vlen(sub(w,drawing[0]))<12/cam.k){closeDrawing();}
+    else{drawing.push([Math.round(w[0]*10)/10,Math.round(w[1]*10)/10]);renderSVG();toolHint();}
+    return;}
+  if(wantPan||S.locked){ptr.panning=true;return;}
+  if(mode==="edit"&&e.button===0){
+    const hv=hitVertex(w);
+    if(hv){sel={type:"vertex",ring:hv.ring,idx:hv.idx};ptr.dragV=hv;
+      renderInspector();renderSVG();return;}
+    const he=hitEdge(w);
+    if(he){sel={type:"edge",ring:he.ring,idx:he.idx};
+      renderInspector();renderSVG();return;}
+    ptr.panning=true;}});
+svg.addEventListener("pointermove",e=>{
+  const w=s2w(e.clientX,e.clientY);cursorW=w;
+  $("cursorInfo").textContent=fmtLen(w[0])+", "+fmtLen(w[1]);
+  if(!ptr.down){if(mode==="drawOuter"||mode==="drawHole"){renderSVG();toolHint();}return;}
+  const dx=e.clientX-ptr.lx,dy=e.clientY-ptr.ly;
+  ptr.moved+=Math.abs(dx)+Math.abs(dy);ptr.lx=e.clientX;ptr.ly=e.clientY;
+  if(ptr.panning){cam.cx-=dx/cam.k;cam.cy-=dy/cam.k;renderSVG();return;}
+  if(ptr.dragV){
+    const r=ringOf(ptr.dragV.ring),n=r.length,i=ptr.dragV.idx;
+    let p=[w[0],w[1]];snapGuide=null;
+    const tol=9/cam.k;
+    for(const nb of[r[(i-1+n)%n],r[(i+1)%n]]){
+      if(Math.abs(p[1]-nb[1])<tol){p[1]=nb[1];snapGuide=Object.assign(snapGuide||{},{y:nb[1]});}
+      if(Math.abs(p[0]-nb[0])<tol){p[0]=nb[0];snapGuide=Object.assign(snapGuide||{},{x:nb[0]});}}
+    r[i]=[Math.round(p[0]*10)/10,Math.round(p[1]*10)/10];
+    update(false);renderInspector();}});
+svg.addEventListener("pointerup",e=>{
+  const wasDragV=ptr.dragV,wasPan=ptr.panning;
+  ptr.down=false;ptr.dragV=null;ptr.panning=false;snapGuide=null;
+  if(wasDragV){save();update();}
+  else if(wasPan&&ptr.moved<5&&(mode==="edit"||S.locked)){
+    const p=hitPiece(s2w(e.clientX,e.clientY));
+    highlightSrc=p?p.src:-1;
+    if(!S.locked&&mode==="edit"&&!p){sel=null;renderInspector();}
+    renderSVG();renderCutList();}
+  else renderSVG();});
+svg.addEventListener("dblclick",e=>{
+  if(S.locked||mode!=="edit")return;
+  const w=s2w(e.clientX,e.clientY);const he=hitEdge(w);
+  if(he){const r=ringOf(he.ring);
+    r.splice(he.idx+1,0,[Math.round(w[0]*10)/10,Math.round(w[1]*10)/10]);
+    sel={type:"vertex",ring:he.ring,idx:he.idx+1};
+    save();update();renderInspector();}});
+svg.addEventListener("wheel",e=>{
+  e.preventDefault();
+  const w0=s2w(e.clientX,e.clientY);
+  cam.k=clamp(cam.k*(e.deltaY<0?1.13:1/1.13),0.005,4);
+  const w1=s2w(e.clientX,e.clientY);
+  cam.cx+=w0[0]-w1[0];cam.cy+=w0[1]-w1[1];renderSVG();},{passive:false});
+window.addEventListener("keydown",e=>{
+  const tag=(e.target.tagName||"").toLowerCase();
+  if(tag==="input"||tag==="select"||tag==="textarea")return;
+  if(e.code==="Space"){ptr.space=true;e.preventDefault();}
+  if(e.key==="Enter"&&(mode==="drawOuter"||mode==="drawHole"))closeDrawing();
+  if(e.key==="Escape"){
+    if(drawing.length){drawing=[];setMode("edit");renderSVG();}
+    else{sel=null;highlightSrc=-1;renderInspector();renderSVG();renderCutList();}}
+  if((e.key==="Delete"||e.key==="Backspace")&&sel&&sel.type==="vertex"&&!S.locked){
+    const r=ringOf(sel.ring);
+    if(r.length>3){r.splice(sel.idx,1);sel=null;save();update();renderInspector();}
+    else showBanner("A closed area needs at least 3 vertices. Use “Delete hole” / “Clear room” to remove it entirely.");}});
+window.addEventListener("keyup",e=>{if(e.code==="Space")ptr.space=false;});
+window.addEventListener("resize",()=>renderSVG());
+function toolHint(){
+  const el=$("toolHint");let t="";
+  if(mode==="drawOuter"||mode==="drawHole"){
+    t="Drawing "+(mode==="drawOuter"?"room outline":"hole")+": click to add vertices ("+
+      drawing.length+" so far). Click the first vertex or press Enter to close · Esc cancels.";
+    if(drawing.length){
+      const last=drawing[drawing.length-1];
+      t+=" Current edge: "+fmtLen(vlen(sub(cursorW,last)))+".";}}
+  else if(S.locked)t="Room locked — outline is click-through. Click a piece to highlight its source plank.";
+  else if(mode==="edit")t="Drag vertices (they snap level/plumb to neighbours) · click an edge to set its length · double-click an edge to add a vertex · click a piece to see its source plank.";
+  else t="Drag to pan · wheel to zoom.";
+  el.textContent=t;}
+function fitView(){
+  if(S.outer.length<2){cam={cx:2000,cy:1500,k:0.15};renderSVG();return;}
+  const b=bboxOf(S.outer),[w,h]=stageSize();
+  const mw=Math.max(b.x1-b.x0,1),mh=Math.max(b.y1-b.y0,1);
+  cam.k=clamp(Math.min(w/(mw*1.25),h/(mh*1.25)),0.005,4);
+  cam.cx=(b.x0+b.x1)/2;cam.cy=(b.y0+b.y1)/2;renderSVG();}
+function setMode(m){
+  mode=m;drawing=[];
+  for(const[id,mm]of[["toolDraw","drawOuter"],["toolHole","drawHole"],
+                      ["toolEdit","edit"],["toolPan","pan"]])
+    $(id).classList.toggle("on",m===mm);
+  toolHint();renderSVG();}
+
+/* ---------------- UI: orchestration + left panel ---------------- */
+let rafPending=false;
+function update(doSave=true){
+  if(doSave)save();
+  if(rafPending)return;rafPending=true;
+  requestAnimationFrame(()=>{rafPending=false;
+    const f=computeFill();
+    if(f.errors.length){R={errors:f.errors,pieces:[],sources:[],stats:{},pools:[]};
+      showBanner(f.errors[0]);}
+    else{const ls=assignLabelsAndStats(f);
+      R=Object.assign(f,ls);
+      if(f.shortfall)showBanner("Stock limits ran out: part of the room could not be filled with the capped lengths. Raise a limit or change the layout rule.");
+      else showBanner(null);}
+    renderSVG();renderRoomInfo();renderResults();renderCutList();});}
+function renderRoomInfo(){
+  const el=$("roomInfo");
+  if(S.outer.length<3){el.innerHTML="<h3>No room yet</h3><p class='hint'>Use “Draw outline”, or load the sample room.</p>";return;}
+  let per=0;for(let i=0;i<S.outer.length;i++)
+    per+=vlen(sub(S.outer[(i+1)%S.outer.length],S.outer[i]));
+  el.innerHTML="<h3>Room</h3><div class='row'><span class='big'>"+fmtArea(roomArea(S.outer,S.holes))+
+    "</span><span class='sub'>floor area</span></div>"+
+    "<div class='sub'>Perimeter "+fmtLen(per)+" · "+S.outer.length+" vertices"+
+    (S.holes.length?" · "+S.holes.length+" hole(s)":"")+
+    (S.locked?" · <b>locked</b>":"")+"</div>";}
+function numInput(id,val,step){return '<input type="number" id="'+id+'" value="'+val+
+  '" step="'+(step||"any")+'">';}
+function renderInspector(force){
+  const el=$("inspector");
+  if(!force&&el.contains(document.activeElement)&&
+     document.activeElement.tagName==="INPUT")return;
+  if(S.locked){el.innerHTML="<p class='hint'>Room is locked. Unlock to edit vertices and edges.</p>";return;}
+  if(!sel){el.innerHTML="<p class='hint'>Select a vertex or an edge on the canvas.</p>";return;}
+  const r=ringOf(sel.ring);if(!r){el.innerHTML="";return;}
+  const where=sel.ring===-1?"Room":("Hole "+(sel.ring+1));
+  if(sel.type==="vertex"){
+    const i=sel.idx,n=r.length,p=r[i];
+    const prev=r[(i-1+n)%n],next=r[(i+1)%n];
+    el.innerHTML="<div class='card'><h3>"+where+" · vertex "+(i+1)+" of "+n+"</h3>"+
+      "<div class='row'><label>X</label>"+numInput("vx",fmtNum(p[0]))+"<span class='unit'>"+unitName()+"</span>"+
+      "<label style='min-width:16px'>Y</label>"+numInput("vy",fmtNum(p[1]))+"<span class='unit'>"+unitName()+"</span></div>"+
+      "<div class='row'><label>Corner angle</label><b>"+interiorAngleDeg(r,i).toFixed(1)+"°</b>"+
+      "<span class='sub'>(interior)</span></div>"+
+      "<div class='row'><span class='sub'>Edges: to prev "+fmtLen(vlen(sub(p,prev)))+
+      " · to next "+fmtLen(vlen(sub(next,p)))+"</span></div>"+
+      "<h3 style='margin-top:8px'>Align this vertex</h3>"+
+      "<div class='row'><button id='alYP'>Level with prev —</button><button id='alYN'>Level with next —</button></div>"+
+      "<div class='row'><button id='alXP'>Plumb with prev |</button><button id='alXN'>Plumb with next |</button></div>"+
+      "<div class='row'><button id='delV' class='danger'>Delete vertex</button>"+
+      (sel.ring>=0?"<button id='delHole' class='danger'>Delete this hole</button>":"")+"</div></div>";
+    const apply=()=>{const x=parseLen($("vx").value),y=parseLen($("vy").value);
+      if(x!=null)r[i][0]=x;if(y!=null)r[i][1]=y;save();update();renderInspector(true);};
+    $("vx").addEventListener("change",apply);$("vy").addEventListener("change",apply);
+    const al=(fn)=>()=>{fn();save();update();renderInspector(true);};
+    $("alYP").onclick=al(()=>r[i][1]=prev[1]);$("alYN").onclick=al(()=>r[i][1]=next[1]);
+    $("alXP").onclick=al(()=>r[i][0]=prev[0]);$("alXN").onclick=al(()=>r[i][0]=next[0]);
+    $("delV").onclick=()=>{if(r.length>3){r.splice(i,1);sel=null;save();update();renderInspector(true);}
+      else showBanner("A closed area needs at least 3 vertices.");};
+    if(sel.ring>=0)$("delHole").onclick=()=>{S.holes.splice(sel.ring,1);sel=null;save();update();renderInspector(true);};
+  }else{
+    const i=sel.idx,a=r[i],b=r[(i+1)%r.length],L=vlen(sub(b,a));
+    el.innerHTML="<div class='card'><h3>"+where+" · edge "+(i+1)+"</h3>"+
+      "<div class='row'><label>Length</label>"+numInput("el",fmtNum(L))+
+      "<span class='unit'>"+unitName()+"</span><button id='elGo'>Set</button></div>"+
+      "<div class='row'><label>Keep fixed</label><select id='elAnchor'>"+
+      "<option value='a'>start vertex "+(i+1)+"</option>"+
+      "<option value='b'>end vertex "+((i+1)%r.length+1)+"</option></select></div>"+
+      "<p class='hint'>The other end slides along the edge direction to make the length exact.</p>"+
+      "<div class='row'><button id='eH'>Make horizontal</button><button id='eV'>Make vertical</button></div>"+
+      "<p class='hint'>Horizontal/vertical moves the end vertex level/plumb with the start vertex.</p></div>";
+    $('elGo').onclick=()=>{
+      const nl=parseLen($("el").value);if(nl==null||nl<=0){showBanner("Edge length must be positive.");return;}
+      const A=r[sel.idx],B=r[(sel.idx+1)%r.length],d=sub(B,A),len=vlen(d)||1;
+      const u=[d[0]/len,d[1]/len];
+      if($("elAnchor").value==="a"){B[0]=A[0]+u[0]*nl;B[1]=A[1]+u[1]*nl;}
+      else{A[0]=B[0]-u[0]*nl;A[1]=B[1]-u[1]*nl;}
+      save();update();renderInspector(true);};
+    $("eH").onclick=()=>{r[(sel.idx+1)%r.length][1]=r[sel.idx][1];save();update();renderInspector(true);};
+    $("eV").onclick=()=>{r[(sel.idx+1)%r.length][0]=r[sel.idx][0];save();update();renderInspector(true);};}}
+function sampleRoom(){
+  S.outer=[[0,0],[4600,0],[4600,3200],[2400,3200],[2400,1700],[0,1700]];
+  S.holes=[[[2900,1000],[3700,1000],[3700,1500],[2900,1500]]];
+  S.locked=false;sel=null;highlightSrc=-1;
+  save();fitView();update();renderInspector(true);syncHeader();}
+
+/* ---------------- UI: right panel ---------------- */
+function lenRow(label,id,mm){
+  return "<div class='row'><label>"+label+"</label>"+numInput(id,fmtNum(mm))+
+    "<span class='unit'>"+unitName()+"</span></div>";}
+function bindLen(id,get,set){
+  $(id).addEventListener("change",()=>{
+    const v=parseLen($(id).value);if(v!=null&&v>0)set(v);
+    save();renderMatEditor();renderFillEditor();update();});}
+function renderMatEditor(){
+  const el=$("matEditor"),p=S.pattern,mat=S.materials[p];
+  if(p==="linear"){
+    let h=lenRow("Plank width","mWidth",mat.width);
+    h+="<div class='matHead'><span></span><span>Length ("+unitName()+")</span><span>Stock limit</span><span></span></div>";
+    mat.lengths.forEach((e,i)=>{
+      h+="<div class='matRow'><span><span class='swatch' style='background:"+WOOD[i%WOOD.length]+
+        "'></span>Length "+(i+1)+"</span>"+
+        numInput("mLen"+i,fmtNum(e.len))+
+        '<input type="number" id="mCap'+i+'" value="'+(e.cap==null?"":e.cap)+
+        '" placeholder="∞" min="0" step="1">'+
+        "<button id='mDel"+i+"' class='danger' title='Remove length'>×</button></div>";});
+    h+="<div class='row'><button id='mAdd' "+(mat.lengths.length>=5?"disabled":"")+
+      ">Add length ("+mat.lengths.length+"/5)</button></div>"+
+      "<p class='hint'>Stock limit = max planks of that length you have. Capped lengths are used first, up to their limit. Leave blank (∞) for unlimited — at least one length must be unlimited.</p>";
+    el.innerHTML=h;
+    bindLen("mWidth",()=>mat.width,v=>mat.width=v);
+    mat.lengths.forEach((e,i)=>{
+      bindLen("mLen"+i,()=>e.len,v=>e.len=v);
+      $("mCap"+i).addEventListener("change",()=>{
+        const t=$("mCap"+i).value.trim();
+        e.cap=t===""?null:Math.max(0,parseInt(t,10)||0);
+        save();renderMatEditor();update();});
+      $("mDel"+i).onclick=()=>{mat.lengths.splice(i,1);save();renderMatEditor();update();};});
+    const add=$("mAdd");if(add)add.onclick=()=>{mat.lengths.push({len:900,cap:null});
+      save();renderMatEditor();update();};
+  }else if(p==="herringbone"||p==="doubleHerringbone"){
+    el.innerHTML=lenRow("Plank length","mLen",mat.len)+lenRow("Plank width","mWid",mat.width)+
+      "<p class='hint'>Aspect ratio <b>"+(mat.len/mat.width).toFixed(2)+"×</b> (minimum 2×). "+
+      "Tongues make left- and right-leaning pieces different stock — results list L and R counts separately, and offcuts are never reused across hands.</p>";
+    bindLen("mLen",()=>mat.len,v=>mat.len=v);
+    bindLen("mWid",()=>mat.width,v=>mat.width=v);
+  }else if(p==="chevron"){
+    const g=chevronGeom(mat);
+    el.innerHTML=
+      "<div class='row'><label>Mitred angle</label>"+
+      "<button data-ang='30'>30°</button><button data-ang='45'>45°</button><button data-ang='60'>60°</button>"+
+      numInput("mAng",mat.angle)+"<span class='unit'>°</span></div>"+
+      lenRow("Plank width","mWid",mat.width)+lenRow("Tip-to-tip","mTip",mat.tip)+
+      chevDiagramSVG(mat)+
+      "<p class='hint'>Width is measured across the plank; tip-to-tip is the full length from point to point along the plank (see diagram). "+
+      "The long edge works out to "+fmtLen(Math.max(g.m,0))+". Left/right pieces are mirrored stock and counted separately.</p>";
+    el.querySelectorAll("[data-ang]").forEach(b=>{
+      b.classList.toggle("on",Math.abs(mat.angle-+b.dataset.ang)<0.01);
+      b.onclick=()=>{mat.angle=+b.dataset.ang;save();renderMatEditor();update();};});
+    $("mAng").addEventListener("change",()=>{
+      const v=parseFloat($("mAng").value);
+      if(isFinite(v)&&v>=15&&v<=75)mat.angle=v;
+      save();renderMatEditor();update();});
+    bindLen("mWid",()=>mat.width,v=>mat.width=v);
+    bindLen("mTip",()=>mat.tip,v=>mat.tip=v);}}
+function chevDiagramSVG(mat){
+  const g=chevronGeom(mat);if(g.m<=0)return"";
+  const W=230,H=104,pad=26;
+  const sx=(W-2*pad)/mat.tip,sy=(H-56)/mat.width,sc=Math.min(sx,sy);
+  const wpx=mat.width*sc,mpx=g.m*sc,dpx=g.d*sc;
+  const y1=14,y0=y1+wpx;
+  const pts=[[pad,y0],[pad+mpx,y0],[pad+mpx+dpx,y1],[pad+dpx,y1]];
+  const d=pathFrom(pts);
+  return "<svg id='chevDiagram' width='"+W+"' height='"+H+"'>"+
+    "<path d='"+d+"' fill='#c99e6b' stroke='#171310'/>"+
+    "<line x1='"+pad+"' y1='"+(y0+12)+"' x2='"+(pad+mpx+dpx)+"' y2='"+(y0+12)+"' stroke='#d29a4a'/>"+
+    "<text x='"+(pad+(mpx+dpx)/2)+"' y='"+(y0+26)+"' fill='#ece5d8' font-size='10.5' text-anchor='middle'>tip-to-tip "+esc(fmtLen(mat.tip))+"</text>"+
+    "<line x1='"+(pad+mpx+dpx+8)+"' y1='"+y1+"' x2='"+(pad+mpx+dpx+8)+"' y2='"+y0+"' stroke='#d29a4a'/>"+
+    "<text x='"+(pad+mpx+dpx+12)+"' y='"+((y0+y1)/2)+"' fill='#ece5d8' font-size='10.5'>width</text>"+
+    "<text x='"+(pad+4)+"' y='"+(y1+12)+"' fill='#221a10' font-size='10.5' font-weight='600'>"+mat.angle+"°</text></svg>";}
+function sliderRow(label,id,min,max,step,val,nid,nval,unit){
+  return "<div class='row'><label>"+label+"</label>"+
+    "<span style='flex:1'><input type='range' id='"+id+"' min='"+min+"' max='"+max+
+    "' step='"+step+"' value='"+val+"'></span>"+
+    numInput(nid,nval)+"<span class='unit'>"+unit+"</span></div>";}
+function renderFillEditor(){
+  const el=$("fillEditor"),f=S.fill;
+  const lim=1000*unitScale();
+  let h=sliderRow("Offset X","fOxS",-1000,1000,5,f.ox,"fOx",fmtNum(f.ox),unitName())+
+        sliderRow("Offset Y","fOyS",-1000,1000,5,f.oy,"fOy",fmtNum(f.oy),unitName())+
+        sliderRow("Rotation","fRotS",-90,90,0.5,f.rot,"fRot",f.rot,"°");
+  if(S.pattern==="linear"){
+    h+="<div class='row'><label>Layout rule</label><select id='fRule' style='flex:1'>"+
+      "<option value='random'>Random lengths (best for big rooms)</option>"+
+      "<option value='randomOffset'>Random offset, repeating lengths</option>"+
+      "<option value='brick'>Brick / running bond (½ offset)</option>"+
+      "<option value='third'>Staggered (⅓ offset)</option></select></div>"+
+      "<div class='row'><label>Length mix</label><select id='fDist' style='flex:1'>"+
+      "<option value='equal'>Equal chance per length</option>"+
+      "<option value='proportional'>Proportional to length</option>"+
+      "<option value='sequence'>Fixed repeating sequence</option></select></div>"+
+      "<div class='row'><label>Random seed</label>"+numInput("fSeed",f.seed)+
+      "<button id='fReroll'>Re-roll</button></div>"+
+      "<p class='hint'>Random modes also keep joints in neighbouring rows at least one plank-width apart, so rows never drift into a brick pattern by accident.</p>";}
+  else h+="<p class='hint'>This pattern's weave is fixed — only offset and rotation vary.</p>";
+  h+=sliderRow("Small-cut alert","fThrS",0,90,1,f.threshold,"fThr",f.threshold,"%")+
+     "<p class='hint'>Pieces showing less than this % of a full plank are highlighted red.</p>"+
+     "<div class='row'><label>Saw kerf</label>"+numInput("fKerf",fmtNum(f.kerf))+
+     "<span class='unit'>"+unitName()+"</span><span class='sub'>sacrificial width per cut (default 3 mm)</span></div>";
+  el.innerHTML=h;
+  const pair=(sid,nid,toS,fromN)=>{
+    $(sid).addEventListener("input",()=>{toS(parseFloat($(sid).value));
+      $(nid).value=fromN();update();});
+    $(nid).addEventListener("change",()=>{const v=parseFloat($(nid).value);
+      if(isFinite(v))toS(v,true);renderFillEditor();update();});};
+  pair("fOxS","fOx",(v,n)=>{f.ox=n?(parseLen(v)??f.ox):v;},()=>fmtNum(f.ox));
+  pair("fOyS","fOy",(v,n)=>{f.oy=n?(parseLen(v)??f.oy):v;},()=>fmtNum(f.oy));
+  pair("fRotS","fRot",v=>f.rot=v,()=>f.rot);
+  pair("fThrS","fThr",v=>f.threshold=clamp(v,0,99),()=>f.threshold);
+  if(S.pattern==="linear"){
+    $("fRule").value=f.rule;$("fDist").value=f.distribution;
+    $("fRule").addEventListener("change",()=>{f.rule=$("fRule").value;save();update();});
+    $("fDist").addEventListener("change",()=>{f.distribution=$("fDist").value;save();update();});
+    $("fSeed").addEventListener("change",()=>{
+      const v=parseInt($("fSeed").value,10);if(isFinite(v))f.seed=v;save();update();});
+    $("fReroll").onclick=()=>{f.seed=Math.floor(Math.random()*1e9);
+      save();renderFillEditor();update();};}
+  $("fKerf").addEventListener("change",()=>{
+    const v=parseLen($("fKerf").value);if(v!=null&&v>=0)f.kerf=v;save();update();});}
+function renderResults(){
+  const el=$("results");
+  if(!R||R.errors.length){
+    el.innerHTML="<p class='hint'>Fix the highlighted problem to see counts.</p>";return;}
+  let totBuy=0,totCut=0,totCutSrc=0,totLB=0,totSmall=0;
+  for(const pool of R.pools){const st=R.stats[pool.key];
+    totBuy+=st.total;totCut+=st.cutPieces;totCutSrc+=st.cutSources;
+    totLB+=st.lowerBound;totSmall+=st.small;}
+  const optimal=totCutSrc===totLB;
+  let h="<div class='card'><div class='row'><span class='big'>"+totBuy+
+    "</span><span class='sub'>planks to buy</span></div>"+
+    "<div class='sub'>"+R.pieces.length+" pieces placed · "+totCut+" need cutting, from "+
+    "<b>"+totCutSrc+"</b> source planks after reusing offcuts "+
+    "(proven minimum "+totLB+(optimal?" — <span class='green'><b>optimal</b></span>":"")+")</div>"+
+    (totSmall?"<div class='sub red'>"+totSmall+" piece(s) under the "+S.fill.threshold+
+      "% small-cut alert — nudge offset/rotation to fix.</div>":"")+
+    "<div class='sub'>Covered "+fmtArea(R.coverage)+" of "+fmtArea(R.area)+"</div></div>";
+  h+="<table class='stats'><tr><th>Plank</th><th>Placed</th><th>Whole</th><th>Cut pcs</th><th>Cut from</th><th>Total</th><th>Waste</th></tr>";
+  for(const pool of R.pools){
+    const st=R.stats[pool.key];if(!st.placed)continue;
+    const over=pool.cap!=null&&st.total>pool.cap;
+    h+="<tr><td><span class='swatch' style='background:"+pool.color+"'></span>"+esc(pool.name)+
+      (pool.cap!=null?" <span class='sub'>(limit "+pool.cap+")</span>":"")+"</td>"+
+      "<td>"+st.placed+"</td><td>"+st.uncut+"</td><td>"+st.cutPieces+"</td>"+
+      "<td>"+st.cutSources+(st.cutPieces?" <span class='sub'>≥"+st.lowerBound+"</span>":"")+"</td>"+
+      "<td>"+(over?"<span class='red'><b>"+st.total+"</b></span>":st.total)+"</td>"+
+      "<td>"+st.waste.toFixed(1)+"%</td></tr>";
+    if(over)h+="<tr><td colspan='7' class='red'>Over the stock limit by "+(st.total-pool.cap)+
+      " — nudge offset/rotation or raise the limit.</td></tr>";}
+  h+="<tr class='tot'><td>Total</td><td>"+R.pieces.length+"</td><td></td><td>"+totCut+
+    "</td><td>"+totCutSrc+"</td><td>"+totBuy+"</td><td></td></tr></table>"+
+    "<p class='hint'>“Cut from” already reuses offcuts: several perimeter pieces can come from one source plank (kerf "+fmtLen(S.fill.kerf)+" charged between pieces, tongues respected). Shared sources are labelled 12A, 12B… on the canvas.</p>";
+  el.innerHTML=h;}
+function renderCutList(){
+  const el=$("cutList");
+  if(!R||R.errors.length){el.innerHTML="";return;}
+  const byId={};R.pieces.forEach(p=>byId[p.id]=p);
+  const cuts=R.sources.filter(s=>s.kind==="cut");
+  if(!cuts.length){el.innerHTML="<p class='hint'>No cut pieces — every plank is whole.</p>";return;}
+  cuts.sort((a,b)=>b.ids.length-a.ids.length||a.num-b.num);
+  el.innerHTML=cuts.map(src=>{
+    const pool=R.poolByKey[src.pool];
+    const desc=src.ids.map(id=>{const p=byId[id];const b=bboxOf(p.local);
+      return "<b>"+esc(p.label)+"</b> "+fmtLen(b.x1-b.x0)+"×"+fmtLen(b.y1-b.y0);}).join(" · ");
+    return "<div class='src' data-src='"+R.sources.indexOf(src)+"'"+
+      (R.sources.indexOf(src)===highlightSrc?" style='background:#2c2822'":"")+">"+
+      "<b>#"+src.num+"</b> <span class='swatch' style='background:"+pool.color+"'></span>"+
+      esc(pool.name)+" → "+desc+"</div>";}).join("");
+  el.querySelectorAll("[data-src]").forEach(d=>{
+    d.onclick=()=>{const i=+d.dataset.src;
+      highlightSrc=highlightSrc===i?-1:i;renderSVG();renderCutList();};});}
+function syncHeader(){
+  $("uMm").classList.toggle("on",S.units==="mm");
+  $("uIn").classList.toggle("on",S.units==="in");
+  $("btnLock").textContent=S.locked?"Unlock room":"Lock room";
+  $("btnLock").classList.toggle("on",S.locked);
+  $("patternSel").value=S.pattern;
+  for(const id of["toolDraw","toolHole","toolEdit"])
+    $(id).disabled=S.locked;}
+function bindHeader(){
+  $("uMm").onclick=()=>{S.units="mm";save();syncAll();};
+  $("uIn").onclick=()=>{S.units="in";save();syncAll();};
+  $("btnExport").onclick=exportJSON;
+  $("btnImport").onclick=()=>$("fileInput").click();
+  $("fileInput").addEventListener("change",e=>{
+    const f=e.target.files[0];if(!f)return;
+    f.text().then(txt=>{
+      try{S=sanitizeState(JSON.parse(txt));sel=null;highlightSrc=-1;
+        save();syncAll();fitView();showBanner(null);}
+      catch(err){showBanner("Import failed: "+err.message);}
+      e.target.value="";});});
+  $("btnSample").onclick=sampleRoom;
+  $("btnClear").onclick=()=>{S.outer=[];S.holes=[];sel=null;
+    save();update();renderInspector(true);};
+  $("btnLock").onclick=()=>{S.locked=!S.locked;if(S.locked)sel=null;
+    save();syncHeader();renderInspector(true);toolHint();renderSVG();renderRoomInfo();};
+  $("toolDraw").onclick=()=>setMode("drawOuter");
+  $("toolHole").onclick=()=>setMode("drawHole");
+  $("toolEdit").onclick=()=>setMode("edit");
+  $("toolPan").onclick=()=>setMode("pan");
+  $("btnFit").onclick=fitView;
+  $("zoomIn").onclick=()=>{cam.k=clamp(cam.k*1.25,0.005,4);renderSVG();};
+  $("zoomOut").onclick=()=>{cam.k=clamp(cam.k/1.25,0.005,4);renderSVG();};
+  for(const id of["showLabels","showCutEdges","showGrid"])
+    $(id).addEventListener("change",renderSVG);
+  $("patternSel").addEventListener("change",()=>{
+    S.pattern=$("patternSel").value;save();
+    renderMatEditor();renderFillEditor();update();});
+  window.addEventListener("beforeunload",()=>{
+    try{localStorage.setItem(LS_KEY,JSON.stringify(S));}catch(e){}});}
+function syncAll(){
+  syncHeader();renderMatEditor();renderFillEditor();
+  renderInspector(true);update();}
+/* ---------------- init ---------------- */
+load();
+bindHeader();syncHeader();
+renderMatEditor();renderFillEditor();renderInspector(true);
+fitView();toolHint();update(false);
+if(typeof module!=="undefined"&&module.exports)
+  module.exports={computeFill,assignLabelsAndStats,triangulate,validateRoom,PATTERNS};
 </script>
 </body>
 </html>
