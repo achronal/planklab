@@ -233,7 +233,7 @@ function defaultState(){
       chevron:{width:120,tip:600,angle:45}
     },
     fill:{ox:0,oy:0,rot:0,rule:"random",distribution:"equal",seed:7,
-          threshold:25,kerf:3}
+          threshold:25,kerf:3,pairedLR:true}
   };
 }
 let S=defaultState();
@@ -908,7 +908,7 @@ function assignLabelsAndStats(fill){
     const usedArea=ps.reduce((s,p)=>s+p.area,0);
     const total=uncut.length+nCutSrc;
     stats[pool.key]={placed:ps.length,uncut:uncut.length,cutPieces:cut.length,
-      cutSources:nCutSrc,lowerBound:lb,total,
+      cutSources:nCutSrc,lowerBound:lb,total,usedArea,
       waste:total?Math.max(0,(total*pool.area-usedArea)/(total*pool.area)*100):0,
       small:ps.filter(p=>p.small).length};}
   const byId={};fill.pieces.forEach(p=>byId[p.id]=p);
@@ -924,6 +924,29 @@ function assignLabelsAndStats(fill){
       byId[id].label=ordered.length>1?num+suffix(k):String(num);});
     src.num=num;src.ids=ordered;});
   return{sources,stats};}
+/* Effective planks to BUY. Left/right-handed stock is typically
+   sold in pairs, so by default (fill.pairedLR) each L/R shape pair
+   must be bought in equal numbers: a pair costs
+   2 * max(needL, needR), and the surplus of the needier hand's
+   partner is spare stock. Untick the toggle to buy exact counts. */
+function pairedGroups(pools){
+  const groups=new Map();
+  for(const p of pools){
+    const g=p.hand?p.key.slice(0,-1):p.key;
+    if(!groups.has(g))groups.set(g,[]);
+    groups.get(g).push(p);}
+  return[...groups.values()];}
+function buyTotalFor(pools,stats){
+  let tot=0;
+  for(const g of pairedGroups(pools)){
+    if(S.fill.pairedLR&&g.length>1)
+      tot+=2*Math.max(...g.map(p=>stats[p.key].total));
+    else for(const p of g)tot+=stats[p.key].total;}
+  return tot;}
+function buyForPool(pools,stats,pool){
+  if(!S.fill.pairedLR||!pool.hand)return stats[pool.key].total;
+  const g=pairedGroups(pools).find(gr=>gr.includes(pool));
+  return g?Math.max(...g.map(p=>stats[p.key].total)):stats[pool.key].total;}
 
 /* ---------------- CONTROL: offset optimizer ----------------
    Hand-tunable constants — deliberately NOT exposed in the UI.
@@ -945,7 +968,7 @@ async function searchOffsets(scoreFn,start,span,opt,onProgress,shouldCancel){
   const snap=v=>Math.round(v*10)/10;
   const cache=new Map();let attempts=0,cancelled=false;
   let best=null;
-  const cmp=(a,b)=>a.tot-b.tot||a.small-b.small||
+  const cmp=(a,b)=>a.tot-b.tot||(a.need||0)-(b.need||0)||a.small-b.small||
     (Math.hypot(a.x-start.x,a.y-start.y)-Math.hypot(b.x-start.x,b.y-start.y));
   async function evalPt(x,y){
     x=snap(x);y=snap(y);
@@ -955,7 +978,7 @@ async function searchOffsets(scoreFn,start,span,opt,onProgress,shouldCancel){
     if(shouldCancel&&shouldCancel()){cancelled=true;return null;}
     attempts++;
     const sc=scoreFn(x,y);
-    const pt=sc?{x,y,tot:sc.tot,small:sc.small||0}:null;
+    const pt=sc?{x,y,tot:sc.tot,need:sc.need||0,small:sc.small||0}:null;
     cache.set(key,pt);
     if(pt&&(!best||cmp(pt,best)<0))best=pt;
     if(onProgress&&attempts%6===0)await onProgress(attempts,best);
@@ -1455,7 +1478,9 @@ function renderFillEditor(){
       "<div class='row'><label>Random seed</label>"+numInput("fSeed",f.seed)+
       "<button id='fReroll'>Re-roll</button></div>"+
       "<p class='hint'>Random modes also keep joints in neighbouring rows at least one plank-width apart, so rows never drift into a brick pattern by accident.</p>";}
-  else h+="<p class='hint'>This pattern's weave is fixed — only offset and rotation vary.</p>";
+  else h+="<div class='row'><label style='min-width:0'><input type='checkbox' id='fPaired'"+
+     (f.pairedLR?" checked":"")+"> Left/right planks sold in pairs — buy equal L &amp; R</label></div>"+
+     "<p class='hint'>This pattern's weave is fixed — only offset and rotation vary. With pairs on, totals and the optimizer assume you buy as many of one hand as the other; untick if your supplier sells hands separately.</p>";
   h+=sliderRow("Small-cut alert","fThrS",0,90,1,f.threshold,"fThr",f.threshold,"%")+
      "<p class='hint'>Pieces showing less than this % of a full plank are highlighted red.</p>"+
      "<div class='row'><label>Saw kerf</label>"+numInput("fKerf",fmtNum(f.kerf))+
@@ -1478,6 +1503,8 @@ function renderFillEditor(){
       const v=parseInt($("fSeed").value,10);if(isFinite(v))f.seed=v;save();update();});
     $("fReroll").onclick=()=>{f.seed=Math.floor(Math.random()*1e9);
       save();renderFillEditor();update();};}
+  const fp=$("fPaired");
+  if(fp)fp.addEventListener("change",()=>{f.pairedLR=fp.checked;save();update();});
   $("fKerf").addEventListener("change",()=>{
     const v=parseLen($("fKerf").value);if(v!=null&&v>=0)f.kerf=v;save();update();});
   $("btnOptimize").onclick=()=>optimizeOffsets();
@@ -1489,16 +1516,18 @@ function plankTotalAt(ox,oy){
   const f=computeFill();
   if(f.errors.length)return null;
   const{stats}=assignLabelsAndStats(f);
-  let tot=0,small=0;
-  for(const p of f.pools){tot+=stats[p.key].total;small+=stats[p.key].small;}
-  return{tot,small};}
+  let need=0,small=0;
+  for(const p of f.pools){need+=stats[p.key].total;small+=stats[p.key].small;}
+  // objective: planks actually bought (paired L/R when enabled);
+  // raw need breaks ties between equal paired totals
+  return{tot:buyTotalFor(f.pools,stats),need,small};}
 async function optimizeOffsets(){
   if(optRunning)return{best:null,attempts:0,cancelled:true};
   if(!R||R.errors.length){showBanner("Fix the current problem first, then optimize.");
     return{best:null,attempts:0,cancelled:true};}
   optRunning=true;optCancelRequested=false;
   const start={x:S.fill.ox,y:S.fill.oy};
-  let startTot=0;for(const p of R.pools)startTot+=R.stats[p.key].total;
+  const startTot=buyTotalFor(R.pools,R.stats);
   const pools=PATTERNS[S.pattern].buildPools(S.materials[S.pattern]);
   const span=Math.max(...pools.map(p=>{const b=bboxOf(p.local);
     return Math.max(b.x1-b.x0,b.y1-b.y0);}));
@@ -1534,16 +1563,28 @@ function renderResults(){
   const el=$("results");
   if(!R||R.errors.length){
     el.innerHTML="<p class='hint'>Fix the highlighted problem to see counts.</p>";return;}
-  let totBuy=0,totCut=0,totCutSrc=0,totLB=0,totSmall=0;
+  let totCut=0,totCutSrc=0,totLB=0,totSmall=0;
   for(const pool of R.pools){const st=R.stats[pool.key];
-    totBuy+=st.total;totCut+=st.cutPieces;totCutSrc+=st.cutSources;
+    totCut+=st.cutPieces;totCutSrc+=st.cutSources;
     totLB+=st.lowerBound;totSmall+=st.small;}
+  const totBuy=buyTotalFor(R.pools,R.stats);
   const optimal=totCutSrc===totLB;
+  let pairLine="";
+  if(S.fill.pairedLR){
+    const parts=[];
+    for(const g of pairedGroups(R.pools))if(g.length>1){
+      const mx=Math.max(...g.map(p=>R.stats[p.key].total));
+      const spare=g.reduce((s,p)=>s+(mx-R.stats[p.key].total),0);
+      parts.push("need "+g.map(p=>p.hand+" "+R.stats[p.key].total).join(" / ")+
+        " → buy "+mx+" of each"+(spare?" ("+spare+" spare)":""));}
+    if(parts.length)pairLine="<div class='sub'>Left/right sold in pairs: "+
+      parts.join("; ")+". Untick “sold in pairs” in Fill settings to buy exact counts.</div>";}
   let h="<div class='card'><div class='row'><span class='big'>"+totBuy+
     "</span><span class='sub'>planks to buy</span></div>"+
     "<div class='sub'>"+R.pieces.length+" pieces placed · "+totCut+" need cutting, from "+
     "<b>"+totCutSrc+"</b> source planks after reusing offcuts "+
     "(proven minimum "+totLB+(optimal?" — <span class='green'><b>optimal</b></span>":"")+")</div>"+
+    pairLine+
     (totSmall?"<div class='sub red'>"+totSmall+" piece(s) under the "+S.fill.threshold+
       "% small-cut alert — nudge offset/rotation to fix.</div>":"")+
     "<div class='sub'>Covered "+fmtArea(R.coverage)+" of "+fmtArea(R.area)+"</div></div>";
@@ -1551,12 +1592,15 @@ function renderResults(){
   for(const pool of R.pools){
     const st=R.stats[pool.key];if(!st.placed)continue;
     const over=pool.cap!=null&&st.total>pool.cap;
+    const buy=buyForPool(R.pools,R.stats,pool);
+    const wasteP=buy?Math.max(0,(buy*pool.area-st.usedArea)/(buy*pool.area)*100):0;
     h+="<tr><td><span class='swatch' style='background:"+pool.color+"'></span>"+esc(pool.name)+
       (pool.cap!=null?" <span class='sub'>(limit "+pool.cap+")</span>":"")+"</td>"+
       "<td>"+st.placed+"</td><td>"+st.uncut+"</td><td>"+st.cutPieces+"</td>"+
       "<td>"+st.cutSources+(st.cutPieces?" <span class='sub'>≥"+st.lowerBound+"</span>":"")+"</td>"+
-      "<td>"+(over?"<span class='red'><b>"+st.total+"</b></span>":st.total)+"</td>"+
-      "<td>"+st.waste.toFixed(1)+"%</td></tr>";
+      "<td>"+(over?"<span class='red'><b>"+st.total+"</b></span>":st.total)+
+      (buy!==st.total?" <span class='sub'>→ buy "+buy+"</span>":"")+"</td>"+
+      "<td>"+wasteP.toFixed(1)+"%</td></tr>";
     if(over)h+="<tr><td colspan='7' class='red'>Over the stock limit by "+(st.total-pool.cap)+
       " — nudge offset/rotation or raise the limit.</td></tr>";}
   h+="<tr class='tot'><td>Total</td><td>"+R.pieces.length+"</td><td></td><td>"+totCut+

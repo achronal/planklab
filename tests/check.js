@@ -173,6 +173,31 @@ applyDock("tr");
 assert(wf.style.top==="10px"&&wf.style.right==="10px"&&
   wf.style.bottom===""&&wf.style.left==="","applyDock anchors top-right only");
 
+// --- paired L/R purchasing (default on, relaxable) ---
+choosePattern("herringbone");
+S.fill.rot=0;S.fill.ox=0;S.fill.oy=0;S.fill.pairedLR=true;update();__flushRaf();
+const needL=R.stats.hbL.total,needR=R.stats.hbR.total;
+assert(needL!==needR,"fixture has unequal L/R needs ("+needL+"/"+needR+")");
+assert(buyTotalFor(R.pools,R.stats)===2*Math.max(needL,needR),
+  "paired buy total = 2 x max(L,R)");
+const scP=plankTotalAt(0,0);
+assert(scP.tot===2*Math.max(needL,needR)&&scP.need===needL+needR,
+  "optimizer objective is the paired total (need breaks ties)");
+update();__flushRaf();
+let resHtml=document.getElementById("results").innerHTML;
+assert(resHtml.includes("sold in pairs"),"results explain the pairing");
+const bigP=+((resHtml.match(/class='big'>(\d+)/)||[])[1]||0);
+assert(bigP===2*Math.max(needL,needR),"headline buy number is paired ("+bigP+")");
+const fp=document.getElementById("fPaired");
+assert(!!fp,"pairs toggle exists for herringbone");
+fp.checked=false;(fp._listeners.change||[]).forEach(fn=>fn());__flushRaf();
+assert(S.fill.pairedLR===false,"toggle relaxes the pairing constraint");
+assert(buyTotalFor(R.pools,R.stats)===needL+needR,"relaxed buy = exact needs");
+resHtml=document.getElementById("results").innerHTML;
+const bigR=+((resHtml.match(/class='big'>(\d+)/)||[])[1]||0);
+assert(bigR===needL+needR,"headline buy number relaxed ("+bigR+")");
+S.fill.pairedLR=true;update();__flushRaf();
+
 if(failures){console.error(failures+" check(s) failed");process.exitCode=1;}
 else console.log("ALL CHECKS PASSED");
 })().catch(e=>{console.error("FAIL (exception):",e&&e.stack||e);process.exitCode=1;});

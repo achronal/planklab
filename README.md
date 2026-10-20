@@ -38,7 +38,11 @@ Found a bug or have an idea? Please
    for its cut guide: all pieces from that source plank drawn inside
    one fresh plank outline, with each cut numbered and given as
    miter-saw measurements from the datum end (distance along/across
-   plus blade angle from square).
+   plus blade angle from square). For herringbone and chevron, left-
+   and right-handed planks are usually sold in pairs, so by default
+   the planner (and its offset optimizer) counts equal numbers of
+   each hand; untick "sold in pairs" in Fill settings if your
+   supplier sells them separately.
 
 ## How offcut reuse works
 
