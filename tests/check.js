@@ -113,6 +113,36 @@ assert(S.fill.rot===90,"linear Vertical sets 90");
 document.getElementById("alH").click();__flushRaf();
 assert(S.fill.rot===0,"linear Horizontal sets 0");
 
+// --- selection highlight layer + cut guide ---
+choosePattern("linear");S.fill.rot=30;update();__flushRaf();
+const cutPiece=R.pieces.find(p=>p.isCut);
+assert(cutPiece&&Array.isArray(cutPiece.stockPoly),
+  "cut piece retains packed position inside its source plank");
+highlightSrc=cutPiece.src;renderSVG();renderCutGuide();
+const svgHtml=document.getElementById("svg").innerHTML;
+assert(svgHtml.includes("#2ee66b"),"selection highlight is bright green");
+assert(svgHtml.indexOf("#2ee66b")>svgHtml.indexOf("#e8c98f"),
+  "highlight is drawn above pieces and room outline (top layer)");
+const guide=document.getElementById("cutGuide").innerHTML;
+assert(guide.includes("<svg")&&guide.includes("datum"),
+  "cut guide shows the source plank diagram with datum");
+assert(/cut 1:/.test(guide)&&(guide.includes("from square")||guide.includes("square cut")),
+  "cut guide lists a cut with its miter angle");
+assert(guide.includes("along "),"cut guide gives measurements from the datum end");
+const shared=R.sources.find(s=>s.kind==="cut"&&s.ids.length>1);
+assert(!!shared,"fixture has a shared cut source");
+if(shared){highlightSrc=R.sources.indexOf(shared);renderCutGuide();
+  const g2=document.getElementById("cutGuide").innerHTML;
+  assert(shared.ids.every(id=>g2.includes(R.pieces.find(p=>p.id===id).label)),
+    "paired pieces appear together in one plank diagram");}
+highlightSrc=-1;renderCutGuide();
+assert(document.getElementById("cutGuide").innerHTML.includes("Click a cut piece"),
+  "cut guide shows hint when nothing is selected");
+choosePattern("herringbone");
+const fe=document.getElementById("fillEditor").innerHTML;
+assert(fe.includes("↔ (-45°)")&&!fe.includes("Horizontal (-45"),
+  "align buttons show arrow and angle only");
+
 if(failures){console.error(failures+" check(s) failed");process.exitCode=1;}
 else console.log("ALL CHECKS PASSED");
 })().catch(e=>{console.error("FAIL (exception):",e&&e.stack||e);process.exitCode=1;});

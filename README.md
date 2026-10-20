@@ -34,7 +34,11 @@ Found a bug or have an idea? Please
    under the configurable % threshold turn red. Every piece carries
    its source-plank number, centred on the visible part; pieces cut
    from one shared plank are numbered 12A, 12B, … "Cut from" counts
-   already reuse offcuts optimally (see below).
+   already reuse offcuts optimally (see below). Click any cut piece
+   for its cut guide: all pieces from that source plank drawn inside
+   one fresh plank outline, with each cut numbered and given as
+   miter-saw measurements from the datum end (distance along/across
+   plus blade angle from square).
 
 ## How offcut reuse works
 

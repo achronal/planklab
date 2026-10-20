@@ -147,7 +147,7 @@ table.stats tr[data-src]{cursor:pointer}
       <button id="btnFit">Fit view</button></div>
     <p class="hint">Mouse wheel zooms. Drag empty space to pan in Pan mode,
       or hold <span class="kbd">Space</span> in any mode. <span class="kbd">Del</span> removes the selected vertex or hole.</p>
-    <div class="card greeting"><p><b>“Do I have enough planks?”</b> The question gnawed at me as I set out to lay down double herringbone in an area connected to a long and narrow corridor. What’s the optimal way to deal with this, and how can I visualize it at the same time? So, this came to be — hope you also find it useful!</p></div>
+    <div class="card greeting"><p><b>“Do I have enough planks?”</b> The question gnawed at me as I set out to lay down double herringbone in an area connected to a long and narrow corridor. What’s the optimal way to deal with this, and how can I visualize it at the same time? So, this came to be — I hope you also find it useful!</p></div>
   </aside>
   <div id="stage">
     <svg id="svg"></svg>
@@ -178,6 +178,8 @@ table.stats tr[data-src]{cursor:pointer}
     <div id="fillEditor"></div>
     <h2>Results</h2>
     <div id="results"></div>
+    <h2>Selected plank — cut guide</h2>
+    <div id="cutGuide"></div>
     <h2>Cut plan — source planks for cut pieces</h2>
     <p class="hint">Pieces sharing a source plank share its number with A / B suffixes on the canvas.
       Click a row to highlight its pieces.</p>
@@ -872,20 +874,25 @@ function packPool(cutPieces,pool,kerf){
     if(fw.length>=2){
       let need=0;for(const p of fw){const b=bboxOf(p.local);need+=b.x1-b.x0+kerf;}
       lb=Math.max(lb,Math.ceil(need/(sb.x1-sb.x0+kerf)-1e-9));}}
-  return{stocks:stocks.map(st=>st.map(x=>x.piece.id)),lowerBound:lb};}
+  return{stocks:stocks.map(st=>st.map(x=>({id:x.piece.id,poly:x.poly}))),
+         lowerBound:lb};}
 function assignLabelsAndStats(fill){
   const sources=[];
   const stats={};
   for(const pool of fill.pools){
     const ps=fill.pieces.filter(p=>p.pool===pool.key);
     const uncut=ps.filter(p=>!p.isCut),cut=ps.filter(p=>p.isCut);
-    for(const p of uncut)sources.push({pool:pool.key,ids:[p.id],kind:"uncut"});
+    const byId0={};fill.pieces.forEach(p=>byId0[p.id]=p);
+    for(const p of uncut){p.stockPoly=p.local;
+      sources.push({pool:pool.key,ids:[p.id],kind:"uncut"});}
     let lb=0,nCutSrc=0;
     if(cut.length){
       const r=packPool(cut,pool,S.fill.kerf);
       lb=r.lowerBound;nCutSrc=r.stocks.length;
-      for(const ids of r.stocks)sources.push({pool:pool.key,ids,kind:"cut"});}
-    const byId={};fill.pieces.forEach(p=>byId[p.id]=p);
+      for(const st of r.stocks){
+        for(const e of st)byId0[e.id].stockPoly=e.poly;
+        sources.push({pool:pool.key,ids:st.map(e=>e.id),kind:"cut"});}}
+    const byId=byId0;
     const usedArea=ps.reduce((s,p)=>s+p.area,0);
     const total=uncut.length+nCutSrc;
     stats[pool.key]={placed:ps.length,uncut:uncut.length,cutPieces:cut.length,
@@ -1002,7 +1009,7 @@ function cutEdgeFlags(piece,pool){
 function renderSVG(){
   const[w,h]=stageSize();const k=cam.k;
   const x0=cam.cx-w/2/k,x1=cam.cx+w/2/k,y0=cam.cy-h/2/k,y1=cam.cy+h/2/k;
-  let s="";
+  let s="",hlPaths="";
   if($("showGrid").checked){
     let step=100;for(const c of[100,200,500,1000,2000])if(c*k>=46){step=c;break;}
     s+='<g stroke="#2c2822" stroke-width="'+(1/k)+'">';
@@ -1022,8 +1029,11 @@ function renderSVG(){
       const fill=p.small?"#d64545":pool.color;
       const hl=p.src===highlightSrc;
       s+='<path d="'+pathFrom(p.world)+'" fill="'+fill+'" fill-opacity="'+
-        (p.isCut?0.92:0.78)+'" stroke="'+(hl?"#ffd98a":"#171310")+
-        '" stroke-width="'+((hl?2.6:1)/k)+'" stroke-linejoin="round"/>';
+        (p.isCut?0.92:0.78)+'" stroke="#171310" stroke-width="'+(1/k)+
+        '" stroke-linejoin="round"/>';
+      if(hl)hlPaths+='<path d="'+pathFrom(p.world)+
+        '" fill="none" stroke="#2ee66b" stroke-width="'+(3.4/k)+
+        '" stroke-linejoin="round" pointer-events="none"/>';
       if(showCut&&p.isCut){
         const fl=cutEdgeFlags(p,R.poolByKey[p.pool]);
         for(let i=0;i<p.world.length;i++)if(fl[i]){
@@ -1043,6 +1053,7 @@ function renderSVG(){
     s+='<path d="'+d+'" fill-rule="evenodd" fill="'+(S.locked?"none":"rgba(210,154,74,0.05)")+
       '" stroke="'+(S.locked?"#8a7a5c":"#e8c98f")+'" stroke-width="'+(S.locked?1.4:2.2)/k+
       '" pointer-events="none"/>';}
+  s+=hlPaths; // selection highlight rides above pieces, labels and outline
   // drawing preview
   if(drawing.length){
     const pts=drawing.concat([cursorW]);
@@ -1174,7 +1185,7 @@ svg.addEventListener("pointerup",e=>{
     const p=hitPiece(s2w(e.clientX,e.clientY));
     highlightSrc=p?p.src:-1;
     if(!S.locked&&mode==="edit"&&!p){sel=null;renderInspector();}
-    renderSVG();renderCutList();}
+    renderSVG();renderCutList();renderCutGuide();}
   else renderSVG();});
 svg.addEventListener("dblclick",e=>{
   if(S.locked||mode!=="edit")return;
@@ -1196,7 +1207,7 @@ window.addEventListener("keydown",e=>{
   if(e.key==="Enter"&&(mode==="drawOuter"||mode==="drawHole"))closeDrawing();
   if(e.key==="Escape"){
     if(drawing.length){drawing=[];setMode("edit");renderSVG();}
-    else{sel=null;highlightSrc=-1;renderInspector();renderSVG();renderCutList();}}
+    else{sel=null;highlightSrc=-1;renderInspector();renderSVG();renderCutList();renderCutGuide();}}
   if((e.key==="Delete"||e.key==="Backspace")&&sel&&sel.type==="vertex"&&!S.locked){
     const r=ringOf(sel.ring);
     if(r.length>3){r.splice(sel.idx,1);sel=null;save();update();renderInspector();}
@@ -1241,7 +1252,7 @@ function update(doSave=true){
       R=Object.assign(f,ls);
       if(f.shortfall)showBanner("Stock limits ran out: part of the room could not be filled with the capped lengths. Raise a limit or change the layout rule.");
       else showBanner(null);}
-    renderSVG();renderRoomInfo();renderResults();renderCutList();});}
+    renderSVG();renderRoomInfo();renderResults();renderCutList();renderCutGuide();});}
 function renderRoomInfo(){
   const el=$("roomInfo");
   if(S.outer.length<3){el.innerHTML="<h3>No room yet</h3><p class='hint'>Use “Draw outline”, or load the sample room.</p>";return;}
@@ -1399,8 +1410,8 @@ function renderFillEditor(){
         sliderRow("Rotation","fRotS",-90,90,0.5,f.rot,"fRot",f.rot,"°");
   const al=ALIGN[S.pattern];
   h+="<div class='row'><label>Align</label>"+
-     "<button id='alH'"+(f.rot===al.h?" class='on'":"")+">↔ Horizontal ("+al.h+"°)</button>"+
-     "<button id='alV'"+(f.rot===al.v?" class='on'":"")+">↕ Vertical ("+al.v+"°)</button></div>";
+     "<button id='alH' title='Horizontal — pattern runs along the room'"+(f.rot===al.h?" class='on'":"")+">↔ ("+al.h+"°)</button>"+
+     "<button id='alV' title='Vertical — pattern runs across the room'"+(f.rot===al.v?" class='on'":"")+">↕ ("+al.v+"°)</button></div>";
   h+="<div class='row'><button id='btnOptimize' style='flex:1'>Optimize offsets to minimize waste</button></div>"+
      "<p class='hint'>Searches offset X/Y around the current values (one plank-length span) for the fewest planks to buy."+
      (optMsg?" <b>"+esc(optMsg)+"</b>":"")+"</p>";
@@ -1542,7 +1553,85 @@ function renderCutList(){
       esc(pool.name)+" → "+desc+"</div>";}).join("");
   el.querySelectorAll("[data-src]").forEach(d=>{
     d.onclick=()=>{const i=+d.dataset.src;
-      highlightSrc=highlightSrc===i?-1:i;renderSVG();renderCutList();};});}
+      highlightSrc=highlightSrc===i?-1:i;renderSVG();renderCutList();renderCutGuide();};});}
+function pieceCutEdges(poly,stock){
+  const out=[];
+  for(let i=0;i<poly.length;i++){
+    const P=poly[i],Q=poly[(i+1)%poly.length];
+    if(vlen(sub(Q,P))<0.05)continue;
+    let on=false;
+    for(let s=0;s<stock.length;s++){
+      const A=stock[s],B=stock[(s+1)%stock.length],e=sub(B,A);
+      if(Math.abs(cross(e,sub(P,A)))<1e-4*vlen(e)&&
+         Math.abs(cross(e,sub(Q,A)))<1e-4*vlen(e)){on=true;break;}}
+    if(!on)out.push({a:P,b:Q});}
+  return out;}
+/* Cut guide for the selected source plank: every piece drawn in its
+   packed position inside one fresh plank outline. Each cut is
+   numbered; the list gives miter-saw measurements from the datum
+   end (★): endpoints as (along the plank, across its width) and the
+   blade angle from a square cross-cut. Long side on the bench,
+   square = 0°, just like the saw's miter dial. */
+function renderCutGuide(){
+  const el=$("cutGuide");if(!el)return;
+  const hint="<p class='hint'>Click a cut piece on the canvas (or a row in the cut plan) to see how to cut it from a fresh plank.</p>";
+  if(!R||R.errors.length||highlightSrc<0||!R.sources[highlightSrc]){el.innerHTML=hint;return;}
+  const src=R.sources[highlightSrc],pool=R.poolByKey[src.pool];
+  if(src.kind==="uncut"){
+    el.innerHTML="<div class='card'><h3>#"+src.num+" · "+esc(pool.name)+
+      "</h3><p class='hint'>Whole plank — no cuts needed.</p></div>";return;}
+  const byId={};R.pieces.forEach(p=>byId[p.id]=p);
+  const stock=pool.local,sb=bboxOf(stock);
+  let u=sub(stock[1],stock[0]);u=[u[0]/vlen(u),u[1]/vlen(u)];
+  let n=[-u[1],u[0]];
+  let O=stock[0];for(const p of stock)if(dot(p,u)<dot(O,u))O=p;
+  if(dot(sub(polyCentroid(stock),O),n)<0)n=[-n[0],-n[1]];
+  for(const p of stock)
+    if(Math.abs(dot(p,u)-dot(O,u))<1e-9&&dot(p,n)<dot(O,n))O=p;
+  const along=p=>dot(sub(p,O),u),across=p=>dot(sub(p,O),n);
+  let aMin=1e18,aMax=-1e18;
+  for(const p of stock){aMin=Math.min(aMin,across(p));aMax=Math.max(aMax,across(p));}
+  const W=300,padL=30,padT=16;
+  const sc=Math.min((W-padL-8)/(sb.x1-sb.x0),130/Math.max(sb.y1-sb.y0,1));
+  const H=padT+(sb.y1-sb.y0)*sc+30;
+  const X=p=>padL+(p[0]-sb.x0)*sc, Y=p=>padT+(p[1]-sb.y0)*sc;
+  const pp=r=>r.map((p,i)=>(i?"L":"M")+X(p).toFixed(1)+" "+Y(p).toFixed(1)).join(" ")+" Z";
+  let g="<svg width='"+W+"' height='"+H+"' style='display:block'>";
+  g+="<path d='"+pp(stock)+"' fill='#2a251f' stroke='#ece5d8' stroke-width='1.4'/>";
+  const cuts=[];let cutNo=0;
+  for(const id of src.ids){
+    const p=byId[id],poly=p.stockPoly||p.local;
+    g+="<path d='"+pp(poly)+"' fill='"+pool.color+"' fill-opacity='0.95' stroke='#171310'/>";
+    const c=polyCentroid(poly);
+    g+="<text x='"+X(c)+"' y='"+Y(c)+"' font-size='11' font-weight='600' fill='#221a10' text-anchor='middle' dominant-baseline='central'>"+esc(p.label)+"</text>";
+    for(const ce of pieceCutEdges(poly,stock)){
+      cutNo++;ce.no=cutNo;ce.piece=p.label;cuts.push(ce);
+      g+="<line x1='"+X(ce.a)+"' y1='"+Y(ce.a)+"' x2='"+X(ce.b)+"' y2='"+Y(ce.b)+
+        "' stroke='#ff7a45' stroke-width='2.6' stroke-linecap='round'/>";
+      const mx=(X(ce.a)+X(ce.b))/2,my=(Y(ce.a)+Y(ce.b))/2;
+      g+="<circle cx='"+mx+"' cy='"+my+"' r='7' fill='#ff7a45'/><text x='"+mx+"' y='"+
+        my+"' font-size='9' font-weight='700' fill='#221a10' text-anchor='middle' dominant-baseline='central'>"+cutNo+"</text>";
+      for(const e of[ce.a,ce.b]){
+        if(stock.some(v=>vlen(sub(v,e))<0.1))continue;
+        const onLong=Math.abs(across(e)-aMin)<0.6||Math.abs(across(e)-aMax)<0.6;
+        g+="<circle cx='"+X(e)+"' cy='"+Y(e)+"' r='2.4' fill='#ece5d8'/><text x='"+
+          (X(e)+4)+"' y='"+(Y(e)-4)+"' font-size='9' fill='#ece5d8'>"+
+          esc(fmtLen(onLong?along(e):across(e)-aMin))+"</text>";}}}
+  g+="<text x='"+(X(O)-16)+"' y='"+(Y(O)+4)+"' font-size='13' fill='#2ee66b'>★</text>";
+  g+="<text x='"+padL+"' y='"+(H-8)+"' font-size='9.5' fill='#a99f8d'>★ datum end — measurements run along the plank from ★; across is from the ★-side long edge.</text></svg>";
+  let rows="";
+  for(const ce of cuts){
+    const v=sub(ce.b,ce.a),L=vlen(v)||1;
+    const ang=Math.acos(clamp(Math.abs(dot([v[0]/L,v[1]/L],n)),0,1))*R2D;
+    const pt=p=>"along "+fmtLen(along(p))+", across "+fmtLen(across(p)-aMin);
+    rows+="<div class='sub' style='margin:3px 0'><b>"+esc(ce.piece)+"</b> · cut "+ce.no+
+      ": mark ("+pt(ce.a)+") to ("+pt(ce.b)+") — "+
+      (ang<0.05?"square cut (0°)":"miter <b>"+ang.toFixed(1)+"°</b> from square")+
+      (ang>60?" <span class='red'>(nearer a rip cut — table saw)</span>":"")+"</div>";}
+  el.innerHTML="<div class='card'><h3>#"+src.num+" · "+esc(pool.name)+" — "+
+    src.ids.length+" piece(s) from this plank</h3>"+g+rows+
+    "<p class='hint'>Long side on the bench, ★ end against your stop. Kerf "+fmtLen(S.fill.kerf)+
+    " between pieces is already allowed for in how they pack.</p></div>";}
 function syncHeader(){
   $("uMm").classList.toggle("on",S.units==="mm");
   $("uIn").classList.toggle("on",S.units==="in");
