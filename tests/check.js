@@ -123,12 +123,28 @@ const svgHtml=document.getElementById("svg").innerHTML;
 assert(svgHtml.includes("#2ee66b"),"selection highlight is bright green");
 assert(svgHtml.indexOf("#2ee66b")>svgHtml.indexOf("#e8c98f"),
   "highlight is drawn above pieces and room outline (top layer)");
+const cpos=n=>svgHtml.indexOf('data-layer="'+n+'"');
+assert(cpos("pieces")>=0&&cpos("pieces")<cpos("cutMarks")&&
+  cpos("cutMarks")<cpos("area")&&cpos("area")<cpos("highlight")&&
+  cpos("highlight")<cpos("labels")&&cpos("labels")<cpos("handles"),
+  "canvas layers render in declared z-order");
 const guide=document.getElementById("cutGuide").innerHTML;
 assert(guide.includes("<svg")&&guide.includes("datum"),
   "cut guide shows the source plank diagram with datum");
 assert(/cut 1:/.test(guide)&&(guide.includes("from square")||guide.includes("square cut")),
   "cut guide lists a cut with its miter angle");
 assert(guide.includes("along "),"cut guide gives measurements from the datum end");
+const svgW=+((guide.match(/<svg width='(\d+)'/)||[])[1]||0);
+assert(svgW>=400,"cut diagram is large (width "+svgW+")");
+assert(document.getElementById("cutGuideFloat").style.display==="flex",
+  "cut guide floats over the canvas on selection");
+const gpos=n=>guide.indexOf('data-layer="'+n+'"');
+assert(gpos("stock")>=0&&gpos("stock")<gpos("pieces")&&
+  gpos("pieces")<gpos("cuts")&&gpos("cuts")<gpos("pieceLabels")&&
+  gpos("pieceLabels")<gpos("dims"),
+  "cut guide layers render in declared z-order");
+assert(gpos("dims")>guide.lastIndexOf("fill-opacity"),
+  "dimension labels paint above every piece fill");
 const shared=R.sources.find(s=>s.kind==="cut"&&s.ids.length>1);
 assert(!!shared,"fixture has a shared cut source");
 if(shared){highlightSrc=R.sources.indexOf(shared);renderCutGuide();
@@ -136,12 +152,25 @@ if(shared){highlightSrc=R.sources.indexOf(shared);renderCutGuide();
   assert(shared.ids.every(id=>g2.includes(R.pieces.find(p=>p.id===id).label)),
     "paired pieces appear together in one plank diagram");}
 highlightSrc=-1;renderCutGuide();
-assert(document.getElementById("cutGuide").innerHTML.includes("Click a cut piece"),
-  "cut guide shows hint when nothing is selected");
+assert(document.getElementById("cutGuideFloat").style.display==="none",
+  "cut guide hidden when nothing is selected");
 choosePattern("herringbone");
 const fe=document.getElementById("fillEditor").innerHTML;
 assert(fe.includes("↔ (-45°)")&&!fe.includes("Horizontal (-45"),
   "align buttons show arrow and angle only");
+// --- cut guide docking ---
+assert(nearestCorner(10,10,100,100)==="tl"&&nearestCorner(90,10,100,100)==="tr"&&
+  nearestCorner(10,90,100,100)==="bl"&&nearestCorner(90,90,100,100)==="br",
+  "nearestCorner picks the right quadrant");
+applyDock("bl");
+const wf=document.getElementById("cutGuideFloat");
+assert(wf.style.bottom==="10px"&&wf.style.left==="10px"&&
+  wf.style.top===""&&wf.style.right==="","applyDock anchors bottom-left only");
+assert((localStorage.getItem("planklab.ui.v1")||"").includes("bl"),
+  "dock corner persisted as UI preference");
+applyDock("tr");
+assert(wf.style.top==="10px"&&wf.style.right==="10px"&&
+  wf.style.bottom===""&&wf.style.left==="","applyDock anchors top-right only");
 
 if(failures){console.error(failures+" check(s) failed");process.exitCode=1;}
 else console.log("ALL CHECKS PASSED");

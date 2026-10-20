@@ -96,6 +96,14 @@ table.stats tr[data-src]{cursor:pointer}
 #optOverlay .barWrap{height:8px;background:#161310;border:1px solid var(--line);
   border-radius:4px;overflow:hidden;margin:10px 0 8px}
 #optBar{height:100%;width:0%;background:var(--accent);transition:width .15s}
+#cutGuideFloat{position:absolute;width:min(560px,88%);max-height:86%;display:none;
+  flex-direction:column;background:rgba(32,29,25,.97);border:1px solid var(--line);
+  border-radius:10px;box-shadow:0 12px 36px rgba(0,0,0,.55);z-index:7;overflow:hidden}
+#cutGuideHead{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  background:var(--panel2);border-bottom:1px solid var(--line);padding:8px 12px;
+  cursor:grab;user-select:none;touch-action:none;font-weight:650;font-size:13px}
+#cutGuideHead:active{cursor:grabbing}
+#cutGuide{padding:10px 12px 12px;overflow-y:auto}
 @media (max-width:980px){main{grid-template-columns:250px 1fr 290px}}
 </style>
 </head>
@@ -159,6 +167,10 @@ table.stats tr[data-src]{cursor:pointer}
       <div id="optText" class="sub"></div>
       <div class="row" style="margin-top:10px"><button id="optCancel">Cancel</button></div>
     </div></div>
+    <div id="cutGuideFloat">
+      <div id="cutGuideHead"><span id="cutGuideTitle">Cut guide</span><button id="cutGuideClose" title="Close">×</button></div>
+      <div id="cutGuide"></div>
+    </div>
     <div id="stageBar">
       <button id="zoomOut">−</button><button id="zoomIn">+</button>
       <span class="z" id="zoomInfo"></span><span class="z" id="cursorInfo"></span>
@@ -178,11 +190,9 @@ table.stats tr[data-src]{cursor:pointer}
     <div id="fillEditor"></div>
     <h2>Results</h2>
     <div id="results"></div>
-    <h2>Selected plank — cut guide</h2>
-    <div id="cutGuide"></div>
     <h2>Cut plan — source planks for cut pieces</h2>
     <p class="hint">Pieces sharing a source plank share its number with A / B suffixes on the canvas.
-      Click a row to highlight its pieces.</p>
+      Click a piece or a row to highlight it and pop up its cut guide on the canvas — drag the guide by its title bar to dock it in any corner.</p>
     <div id="cutList"></div>
   </aside>
 </main>
@@ -1006,69 +1016,84 @@ function cutEdgeFlags(piece,pool){
          Math.abs(cross(e,sub(Q,A)))<1e-4*vlen(e)){onStock=true;break;}}
     flags.push(!onStock);}
   piece._cef=flags;return flags;}
+/* ---- SVG layer stacks ----
+   Every renderer paints into NAMED layers instead of relying on
+   incidental append order. Each ORDER list below IS the z-order
+   (first = bottom), clustered by logical group: shapes first,
+   then marks/highlights, then ALL text and measurements on top,
+   then interactive handles. To change what covers what, reorder
+   the list — nothing else decides layering. Layers render as
+   <g data-layer="name"> so the stacking is inspectable in the DOM. */
+const CANVAS_LAYERS=["grid","pieces","cutMarks","area","highlight",
+                     "labels","preview","handles"];
+const GUIDE_LAYERS=["stock","pieces","cuts","dots","leaders","badges",
+                    "pieceLabels","dims","notes"];
+function layerStack(order){
+  const buf={};for(const k of order)buf[k]=[];
+  return{
+    add(k,s){buf[k].push(s);},
+    render(){return order.map(k=>buf[k].length?
+      '<g data-layer="'+k+'">'+buf[k].join("")+"</g>":"").join("");}};}
 function renderSVG(){
   const[w,h]=stageSize();const k=cam.k;
   const x0=cam.cx-w/2/k,x1=cam.cx+w/2/k,y0=cam.cy-h/2/k,y1=cam.cy+h/2/k;
-  let s="",hlPaths="";
+  const L=layerStack(CANVAS_LAYERS);
   if($("showGrid").checked){
     let step=100;for(const c of[100,200,500,1000,2000])if(c*k>=46){step=c;break;}
-    s+='<g stroke="#2c2822" stroke-width="'+(1/k)+'">';
+    let t='<g stroke="#2c2822" stroke-width="'+(1/k)+'">';
     for(let x=Math.floor(x0/step)*step;x<=x1;x+=step)
-      s+='<line x1="'+x+'" y1="'+y0+'" x2="'+x+'" y2="'+y1+'"/>';
+      t+='<line x1="'+x+'" y1="'+y0+'" x2="'+x+'" y2="'+y1+'"/>';
     for(let y=Math.floor(y0/step)*step;y<=y1;y+=step)
-      s+='<line x1="'+x0+'" y1="'+y+'" x2="'+x1+'" y2="'+y+'"/>';
-    s+="</g>";
-    s+='<g fill="#5c5546" font-size="'+(10.5/k)+'" font-family="inherit">';
+      t+='<line x1="'+x0+'" y1="'+y+'" x2="'+x1+'" y2="'+y+'"/>';
+    t+="</g>";
+    t+='<g fill="#5c5546" font-size="'+(10.5/k)+'" font-family="inherit">';
     for(let x=Math.floor(x0/step)*step;x<=x1;x+=step)
-      s+='<text x="'+(x+3/k)+'" y="'+(y0+13/k)+'">'+esc(fmtNum(x))+"</text>";
-    s+="</g>";}
+      t+='<text x="'+(x+3/k)+'" y="'+(y0+13/k)+'">'+esc(fmtNum(x))+"</text>";
+    t+="</g>";L.add("grid",t);}
   if(R&&!R.errors.length){
     const showLabels=$("showLabels").checked,showCut=$("showCutEdges").checked;
     for(const p of R.pieces){
       const pool=R.poolByKey[p.pool];
       const fill=p.small?"#d64545":pool.color;
       const hl=p.src===highlightSrc;
-      s+='<path d="'+pathFrom(p.world)+'" fill="'+fill+'" fill-opacity="'+
+      L.add("pieces",'<path d="'+pathFrom(p.world)+'" fill="'+fill+'" fill-opacity="'+
         (p.isCut?0.92:0.78)+'" stroke="#171310" stroke-width="'+(1/k)+
-        '" stroke-linejoin="round"/>';
-      if(hl)hlPaths+='<path d="'+pathFrom(p.world)+
+        '" stroke-linejoin="round"/>');
+      if(hl)L.add("highlight",'<path d="'+pathFrom(p.world)+
         '" fill="none" stroke="#2ee66b" stroke-width="'+(3.4/k)+
-        '" stroke-linejoin="round" pointer-events="none"/>';
+        '" stroke-linejoin="round" pointer-events="none"/>');
       if(showCut&&p.isCut){
         const fl=cutEdgeFlags(p,R.poolByKey[p.pool]);
         for(let i=0;i<p.world.length;i++)if(fl[i]){
           const a=p.world[i],b=p.world[(i+1)%p.world.length];
-          s+='<line x1="'+a[0]+'" y1="'+a[1]+'" x2="'+b[0]+'" y2="'+b[1]+
-            '" stroke="#ff7a45" stroke-width="'+(2.2/k)+'" stroke-linecap="round"/>';}}}
+          L.add("cutMarks",'<line x1="'+a[0]+'" y1="'+a[1]+'" x2="'+b[0]+'" y2="'+b[1]+
+            '" stroke="#ff7a45" stroke-width="'+(2.2/k)+'" stroke-linecap="round"/>');}}}
     if(showLabels)for(const p of R.pieces){
       const fs=Math.min(12.5/k,Math.sqrt(p.area)*0.30);
       if(fs<3.2/k&&R.pieces.length>400)continue;
-      s+='<text x="'+p.labelPt[0]+'" y="'+p.labelPt[1]+
+      L.add("labels",'<text x="'+p.labelPt[0]+'" y="'+p.labelPt[1]+
         '" font-size="'+fs+'" fill="#221a10" font-weight="600" text-anchor="middle" '+
         'dominant-baseline="central" pointer-events="none" font-family="inherit">'+
-        esc(p.label)+"</text>";}}
-  // room outline
+        esc(p.label)+"</text>");}}
   if(S.outer.length>=3){
     let d=pathFrom(S.outer);for(const hh of S.holes)d+=" "+pathFrom(hh);
-    s+='<path d="'+d+'" fill-rule="evenodd" fill="'+(S.locked?"none":"rgba(210,154,74,0.05)")+
+    L.add("area",'<path d="'+d+'" fill-rule="evenodd" fill="'+(S.locked?"none":"rgba(210,154,74,0.05)")+
       '" stroke="'+(S.locked?"#8a7a5c":"#e8c98f")+'" stroke-width="'+(S.locked?1.4:2.2)/k+
-      '" pointer-events="none"/>';}
-  s+=hlPaths; // selection highlight rides above pieces, labels and outline
-  // drawing preview
+      '" pointer-events="none"/>');}
   if(drawing.length){
     const pts=drawing.concat([cursorW]);
-    s+='<path d="'+pts.map((p,i)=>(i?"L":"M")+p[0]+" "+p[1]).join(" ")+
-      '" fill="none" stroke="#ffd98a" stroke-width="'+(1.8/k)+'" stroke-dasharray="'+(6/k)+" "+(4/k)+'"/>';
+    L.add("preview",'<path d="'+pts.map((p,i)=>(i?"L":"M")+p[0]+" "+p[1]).join(" ")+
+      '" fill="none" stroke="#ffd98a" stroke-width="'+(1.8/k)+'" stroke-dasharray="'+(6/k)+" "+(4/k)+'"/>');
     for(const p of drawing)
-      s+='<circle cx="'+p[0]+'" cy="'+p[1]+'" r="'+(4.5/k)+'" fill="#ffd98a"/>';}
+      L.add("preview",'<circle cx="'+p[0]+'" cy="'+p[1]+'" r="'+(4.5/k)+'" fill="#ffd98a"/>');}
   if(snapGuide){
-    if(snapGuide.x!=null)s+='<line x1="'+snapGuide.x+'" y1="'+y0+'" x2="'+snapGuide.x+
-      '" y2="'+y1+'" stroke="#7fb069" stroke-width="'+(1.2/k)+'" stroke-dasharray="'+(5/k)+" "+(4/k)+'"/>';
-    if(snapGuide.y!=null)s+='<line x1="'+x0+'" y1="'+snapGuide.y+'" x2="'+x1+
-      '" y2="'+snapGuide.y+'" stroke="#7fb069" stroke-width="'+(1.2/k)+'" stroke-dasharray="'+(5/k)+" "+(4/k)+'"/>';}
-  s+=renderHandles(x0,y0,x1,y1);
+    if(snapGuide.x!=null)L.add("preview",'<line x1="'+snapGuide.x+'" y1="'+y0+'" x2="'+snapGuide.x+
+      '" y2="'+y1+'" stroke="#7fb069" stroke-width="'+(1.2/k)+'" stroke-dasharray="'+(5/k)+" "+(4/k)+'"/>');
+    if(snapGuide.y!=null)L.add("preview",'<line x1="'+x0+'" y1="'+snapGuide.y+'" x2="'+x1+
+      '" y2="'+snapGuide.y+'" stroke="#7fb069" stroke-width="'+(1.2/k)+'" stroke-dasharray="'+(5/k)+" "+(4/k)+'"/>');}
+  L.add("handles",renderHandles(x0,y0,x1,y1));
   svg.innerHTML='<g transform="translate('+(w/2)+" "+(h/2)+") scale("+k+
-    ") translate("+(-cam.cx)+" "+(-cam.cy)+')">'+s+"</g>";
+    ") translate("+(-cam.cx)+" "+(-cam.cy)+')">'+L.render()+"</g>";
   $("zoomInfo").textContent="zoom "+(k*1000).toFixed(0)+" px/"+(S.units==="in"?"ft":"m")+
     " · grid "+fmtLen(gridStep());
   function gridStep(){let step=100;for(const c of[100,200,500,1000,2000])if(c*k>=46){step=c;break;}return step;}}
@@ -1573,13 +1598,15 @@ function pieceCutEdges(poly,stock){
    blade angle from a square cross-cut. Long side on the bench,
    square = 0°, just like the saw's miter dial. */
 function renderCutGuide(){
-  const el=$("cutGuide");if(!el)return;
-  const hint="<p class='hint'>Click a cut piece on the canvas (or a row in the cut plan) to see how to cut it from a fresh plank.</p>";
-  if(!R||R.errors.length||highlightSrc<0||!R.sources[highlightSrc]){el.innerHTML=hint;return;}
+  const el=$("cutGuide"),wrap=$("cutGuideFloat");if(!el||!wrap)return;
+  if(!R||R.errors.length||highlightSrc<0||!R.sources[highlightSrc]){
+    wrap.style.display="none";el.innerHTML="";return;}
   const src=R.sources[highlightSrc],pool=R.poolByKey[src.pool];
+  wrap.style.display="flex";
+  $("cutGuideTitle").textContent="Cut guide · #"+src.num+" · "+pool.name+
+    (src.kind==="cut"?" — "+src.ids.length+" piece(s) from this plank":"");
   if(src.kind==="uncut"){
-    el.innerHTML="<div class='card'><h3>#"+src.num+" · "+esc(pool.name)+
-      "</h3><p class='hint'>Whole plank — no cuts needed.</p></div>";return;}
+    el.innerHTML="<p class='hint'>Whole plank — no cuts needed.</p>";return;}
   const byId={};R.pieces.forEach(p=>byId[p.id]=p);
   const stock=pool.local,sb=bboxOf(stock);
   let u=sub(stock[1],stock[0]);u=[u[0]/vlen(u),u[1]/vlen(u)];
@@ -1591,34 +1618,56 @@ function renderCutGuide(){
   const along=p=>dot(sub(p,O),u),across=p=>dot(sub(p,O),n);
   let aMin=1e18,aMax=-1e18;
   for(const p of stock){aMin=Math.min(aMin,across(p));aMax=Math.max(aMax,across(p));}
-  const W=300,padL=30,padT=16;
-  const sc=Math.min((W-padL-8)/(sb.x1-sb.x0),130/Math.max(sb.y1-sb.y0,1));
-  const H=padT+(sb.y1-sb.y0)*sc+30;
+  const W=Math.round(clamp(stageSize()[0]*0.62,380,560)),padL=34,padT=34;
+  const sc=Math.min((W-padL-12)/(sb.x1-sb.x0),200/Math.max(sb.y1-sb.y0,1));
+  const H=padT+(sb.y1-sb.y0)*sc+58;
   const X=p=>padL+(p[0]-sb.x0)*sc, Y=p=>padT+(p[1]-sb.y0)*sc;
   const pp=r=>r.map((p,i)=>(i?"L":"M")+X(p).toFixed(1)+" "+Y(p).toFixed(1)).join(" ")+" Z";
-  let g="<svg width='"+W+"' height='"+H+"' style='display:block'>";
-  g+="<path d='"+pp(stock)+"' fill='#2a251f' stroke='#ece5d8' stroke-width='1.4'/>";
-  const cuts=[];let cutNo=0;
+  const G=layerStack(GUIDE_LAYERS);
+  G.add("stock","<path d='"+pp(stock)+"' fill='#2a251f' stroke='#ece5d8' stroke-width='1.4'/>");
+  const cuts=[],epLabels=[];let cutNo=0;
   for(const id of src.ids){
     const p=byId[id],poly=p.stockPoly||p.local;
-    g+="<path d='"+pp(poly)+"' fill='"+pool.color+"' fill-opacity='0.95' stroke='#171310'/>";
+    G.add("pieces","<path d='"+pp(poly)+"' fill='"+pool.color+"' fill-opacity='0.95' stroke='#171310'/>");
     const c=polyCentroid(poly);
-    g+="<text x='"+X(c)+"' y='"+Y(c)+"' font-size='11' font-weight='600' fill='#221a10' text-anchor='middle' dominant-baseline='central'>"+esc(p.label)+"</text>";
+    G.add("pieceLabels","<text x='"+X(c)+"' y='"+Y(c)+"' font-size='13' font-weight='600' fill='#221a10' text-anchor='middle' dominant-baseline='central'>"+esc(p.label)+"</text>");
     for(const ce of pieceCutEdges(poly,stock)){
       cutNo++;ce.no=cutNo;ce.piece=p.label;cuts.push(ce);
-      g+="<line x1='"+X(ce.a)+"' y1='"+Y(ce.a)+"' x2='"+X(ce.b)+"' y2='"+Y(ce.b)+
-        "' stroke='#ff7a45' stroke-width='2.6' stroke-linecap='round'/>";
+      G.add("cuts","<line x1='"+X(ce.a)+"' y1='"+Y(ce.a)+"' x2='"+X(ce.b)+"' y2='"+Y(ce.b)+
+        "' stroke='#ff7a45' stroke-width='2.6' stroke-linecap='round'/>");
       const mx=(X(ce.a)+X(ce.b))/2,my=(Y(ce.a)+Y(ce.b))/2;
-      g+="<circle cx='"+mx+"' cy='"+my+"' r='7' fill='#ff7a45'/><text x='"+mx+"' y='"+
-        my+"' font-size='9' font-weight='700' fill='#221a10' text-anchor='middle' dominant-baseline='central'>"+cutNo+"</text>";
+      G.add("badges","<circle cx='"+mx+"' cy='"+my+"' r='8.5' fill='#ff7a45'/><text x='"+mx+"' y='"+
+        my+"' font-size='10.5' font-weight='700' fill='#221a10' text-anchor='middle' dominant-baseline='central'>"+cutNo+"</text>");
       for(const e of[ce.a,ce.b]){
         if(stock.some(v=>vlen(sub(v,e))<0.1))continue;
-        const onLong=Math.abs(across(e)-aMin)<0.6||Math.abs(across(e)-aMax)<0.6;
-        g+="<circle cx='"+X(e)+"' cy='"+Y(e)+"' r='2.4' fill='#ece5d8'/><text x='"+
-          (X(e)+4)+"' y='"+(Y(e)-4)+"' font-size='9' fill='#ece5d8'>"+
-          esc(fmtLen(onLong?along(e):across(e)-aMin))+"</text>";}}}
-  g+="<text x='"+(X(O)-16)+"' y='"+(Y(O)+4)+"' font-size='13' fill='#2ee66b'>★</text>";
-  g+="<text x='"+padL+"' y='"+(H-8)+"' font-size='9.5' fill='#a99f8d'>★ datum end — measurements run along the plank from ★; across is from the ★-side long edge.</text></svg>";
+        const onTop=Math.abs(across(e)-aMin)<0.6,onBot=Math.abs(across(e)-aMax)<0.6;
+        G.add("dots","<circle cx='"+X(e)+"' cy='"+Y(e)+"' r='2.6' fill='#ece5d8'/>");
+        epLabels.push({x:X(e),y:Y(e),ac:across(e)-aMin,
+          txt:fmtLen(onTop||onBot?along(e):across(e)-aMin)});}}}
+  // endpoint dimension labels: all sit outside the plank — above it
+  // for points in the top half, below for the bottom half — spread
+  // horizontally over two staggered rows per side, leader-lined back
+  // to their point, so measurements never print on top of each other
+  const stockBotY=padT+(sb.y1-sb.y0)*sc,midAc=(aMax-aMin)/2;
+  for(const grpName of["top","bottom"]){
+    const grp=epLabels.filter(l=>(l.ac<=midAc)===(grpName==="top"))
+      .sort((a,b)=>a.x-b.x);
+    const rowRight=[-1e9,-1e9];
+    for(const l of grp){
+      const wpx=l.txt.length*6.6+6;
+      let cx=clamp(l.x,wpx/2+2,W-wpx/2-2);
+      let r=rowRight[0]<=cx-wpx/2?0:(rowRight[1]<=cx-wpx/2?1:0);
+      if(rowRight[r]>cx-wpx/2)cx=rowRight[r]+wpx/2;
+      rowRight[r]=cx+wpx/2;
+      const ty=grpName==="top"?padT-9-r*13:stockBotY+17+r*13;
+      G.add("leaders","<line x1='"+l.x+"' y1='"+l.y+"' x2='"+cx+"' y2='"+
+        (grpName==="top"?ty+3:ty-11)+
+        "' stroke='#6f675a' stroke-width='0.8'/>");
+      G.add("dims","<text x='"+cx+"' y='"+ty+
+        "' font-size='10.5' fill='#ece5d8' text-anchor='middle'>"+esc(l.txt)+"</text>");}}
+  G.add("notes","<text x='"+(X(O)-20)+"' y='"+(Y(O)+5)+"' font-size='15' fill='#2ee66b'>★</text>");
+  G.add("notes","<text x='"+padL+"' y='"+(H-10)+"' font-size='10.5' fill='#a99f8d'>★ datum end — measurements run along the plank from ★; across is from the ★-side long edge.</text>");
+  const g="<svg width='"+W+"' height='"+H+"' style='display:block'>"+G.render()+"</svg>";
   let rows="";
   for(const ce of cuts){
     const v=sub(ce.b,ce.a),L=vlen(v)||1;
@@ -1628,10 +1677,48 @@ function renderCutGuide(){
       ": mark ("+pt(ce.a)+") to ("+pt(ce.b)+") — "+
       (ang<0.05?"square cut (0°)":"miter <b>"+ang.toFixed(1)+"°</b> from square")+
       (ang>60?" <span class='red'>(nearer a rip cut — table saw)</span>":"")+"</div>";}
-  el.innerHTML="<div class='card'><h3>#"+src.num+" · "+esc(pool.name)+" — "+
-    src.ids.length+" piece(s) from this plank</h3>"+g+rows+
+  el.innerHTML=g+rows+
     "<p class='hint'>Long side on the bench, ★ end against your stop. Kerf "+fmtLen(S.fill.kerf)+
-    " between pieces is already allowed for in how they pack.</p></div>";}
+    " between pieces is already allowed for in how they pack.</p>";}
+/* Floating cut guide: drag by its title bar, snaps to the nearest
+   stage corner on drop. The corner is a UI preference only — kept
+   in local storage, never in the exported project. */
+const UI_PREFS_KEY="planklab.ui.v1";
+let cutGuideCorner="tr";
+try{const p=JSON.parse(localStorage.getItem(UI_PREFS_KEY)||"{}");
+  if(["tl","tr","bl","br"].includes(p.cutGuideCorner))cutGuideCorner=p.cutGuideCorner;}catch(e){}
+function nearestCorner(cx,cy,w,h){return(cy<h/2?"t":"b")+(cx<w/2?"l":"r");}
+function applyDock(corner){
+  cutGuideCorner=corner;
+  const w=$("cutGuideFloat");if(!w)return;
+  w.style.top=w.style.bottom=w.style.left=w.style.right="";
+  if(corner[0]==="t")w.style.top="10px";else w.style.bottom="10px";
+  if(corner[1]==="l")w.style.left="10px";else w.style.right="10px";
+  try{localStorage.setItem(UI_PREFS_KEY,JSON.stringify({cutGuideCorner:corner}));}catch(e){}}
+function bindCutGuideDrag(){
+  const head=$("cutGuideHead"),wrap=$("cutGuideFloat");
+  $("cutGuideClose").onclick=()=>{
+    highlightSrc=-1;renderSVG();renderCutList();renderCutGuide();};
+  let drag=null;
+  head.addEventListener("pointerdown",e=>{
+    if(e.target===$("cutGuideClose"))return;
+    const sr=stage.getBoundingClientRect(),wr=wrap.getBoundingClientRect();
+    drag={dx:e.clientX-wr.left,dy:e.clientY-wr.top,sr};
+    wrap.style.left=(wr.left-sr.left)+"px";wrap.style.top=(wr.top-sr.top)+"px";
+    wrap.style.right="";wrap.style.bottom="";
+    head.setPointerCapture(e.pointerId);e.preventDefault();});
+  head.addEventListener("pointermove",e=>{
+    if(!drag)return;
+    const wr=wrap.getBoundingClientRect();
+    wrap.style.left=clamp(e.clientX-drag.sr.left-drag.dx,0,
+      Math.max(drag.sr.width-wr.width,0))+"px";
+    wrap.style.top=clamp(e.clientY-drag.sr.top-drag.dy,0,
+      Math.max(drag.sr.height-wr.height,0))+"px";});
+  head.addEventListener("pointerup",()=>{
+    if(!drag)return;drag=null;
+    const sr=stage.getBoundingClientRect(),wr=wrap.getBoundingClientRect();
+    applyDock(nearestCorner(wr.left-sr.left+wr.width/2,
+      wr.top-sr.top+wr.height/2,sr.width,sr.height));});}
 function syncHeader(){
   $("uMm").classList.toggle("on",S.units==="mm");
   $("uIn").classList.toggle("on",S.units==="in");
@@ -1682,6 +1769,7 @@ function syncAll(){
 /* ---------------- init ---------------- */
 load();
 bindHeader();syncHeader();
+bindCutGuideDrag();applyDock(cutGuideCorner);
 renderMatEditor();renderFillEditor();renderInspector(true);
 fitView();toolHint();update(false);
 if(typeof module!=="undefined"&&module.exports)
