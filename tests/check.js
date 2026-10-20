@@ -198,6 +198,22 @@ const bigR=+((resHtml.match(/class='big'>(\d+)/)||[])[1]||0);
 assert(bigR===needL+needR,"headline buy number relaxed ("+bigR+")");
 S.fill.pairedLR=true;update();__flushRaf();
 
+// --- room-scale units: m²/ft² for area, m/ft for perimeter ---
+S.units="in";
+assert(fmtArea(92903.04)==="1.0 ft²","imperial area in ft² ("+fmtArea(92903.04)+")");
+assert(fmtArea(12.6e6)==="135.6 ft²","room area in ft² ("+fmtArea(12.6e6)+")");
+assert(fmtRoomLen(3048)==="10.00 ft","imperial perimeter in ft ("+fmtRoomLen(3048)+")");
+renderRoomInfo();
+assert(document.getElementById("roomInfo").innerHTML.includes("ft²")&&
+  /Perimeter [\d.]+ ft/.test(document.getElementById("roomInfo").innerHTML),
+  "room card shows ft² and ft in imperial");
+S.units="mm";
+assert(fmtArea(12.6e6)==="12.60 m²","metric area in m² ("+fmtArea(12.6e6)+")");
+assert(fmtRoomLen(14400)==="14.40 m","metric perimeter in m ("+fmtRoomLen(14400)+")");
+renderRoomInfo();
+assert(/Perimeter [\d.]+ m /.test(document.getElementById("roomInfo").innerHTML+" "),
+  "room card shows perimeter in metres in metric");
+
 if(failures){console.error(failures+" check(s) failed");process.exitCode=1;}
 else console.log("ALL CHECKS PASSED");
 })().catch(e=>{console.error("FAIL (exception):",e&&e.stack||e);process.exitCode=1;});

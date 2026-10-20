@@ -245,8 +245,15 @@ function fmtNum(mm){const v=mm*unitScale();
   return S.units==="in"?(Math.round(v*100)/100):(Math.round(v*10)/10);}
 function parseLen(str){const v=parseFloat(str);if(!isFinite(v))return null;
   return S.units==="in"?v*MM_PER_IN:v;}
-function fmtArea(mm2){const k=unitScale()*unitScale();const v=mm2*k;
-  return (S.units==="in"?v.toFixed(1):(v/1e6).toFixed(2))+" "+(S.units==="in"?"in²":"m²");}
+/* Room-scale quantities use room-scale units regardless of the
+   precision unit chosen for planks and cuts: areas in m² / ft²,
+   perimeter in m / ft. (1 ft² = 92903.04 mm², 1 ft = 304.8 mm.) */
+function fmtArea(mm2){
+  return S.units==="in"?(mm2/92903.04).toFixed(1)+" ft²"
+                       :(mm2/1e6).toFixed(2)+" m²";}
+function fmtRoomLen(mm){
+  return S.units==="in"?(mm/304.8).toFixed(2)+" ft"
+                       :(mm/1000).toFixed(2)+" m";}
 
 /* ---------------- DATA: persistence ---------------- */
 let saveTimer=null;
@@ -1310,7 +1317,7 @@ function renderRoomInfo(){
     per+=vlen(sub(S.outer[(i+1)%S.outer.length],S.outer[i]));
   el.innerHTML="<h3>Room</h3><div class='row'><span class='big'>"+fmtArea(roomArea(S.outer,S.holes))+
     "</span><span class='sub'>floor area</span></div>"+
-    "<div class='sub'>Perimeter "+fmtLen(per)+" · "+S.outer.length+" vertices"+
+    "<div class='sub'>Perimeter "+fmtRoomLen(per)+" · "+S.outer.length+" vertices"+
     (S.holes.length?" · "+S.holes.length+" hole(s)":"")+
     (S.locked?" · <b>locked</b>":"")+"</div>";}
 function numInput(id,val,step){return '<input type="number" id="'+id+'" value="'+val+
