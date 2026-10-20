@@ -474,13 +474,15 @@ function herringbonePlacements(bb,a,b,poolL,poolR,split){
       out.push({pool:poolR,ox:ox-B,oy,rot:Math.PI/2});
     }}
   return out;}
-function linearPlacements(bb,mat,fill,pools){
+function linearPlacements(bb,mat,fill,pools,coverTest){
   const W=mat.width,lens=mat.lengths;
   const rng=mulberry32(fill.seed|0);
   const remaining=lens.map(e=>e.cap==null?Infinity:e.cap);
   const out=[];let shortfall=false;let seqCounter=0;
+  // caps are only spent on placements that actually reach the room
   const emit=(si,x,y)=>{if(remaining[si]<=0)return false;
-    remaining[si]--;out.push({pool:pools[si].key,ox:x,oy:y,rot:0});return true;};
+    if(!coverTest||coverTest(x+lens[si].len/2,y+W/2))remaining[si]--;
+    out.push({pool:pools[si].key,ox:x,oy:y,rot:0});return true;};
   const yStart=Math.floor(bb.y0/W)*W;
   let prevJoints=[];
   for(let y=yStart;y<bb.y1;y+=W){
@@ -555,7 +557,7 @@ const PATTERNS={
       key:"lin"+i,hand:"",name:fmtLen(e.len)+" × "+fmtLen(mat.width),
       dim:[e.len,mat.width],local:rectLocal(e.len,mat.width),
       area:e.len*mat.width,cap:e.cap,color:WOOD[i%WOOD.length]}));},
-    generate(bb,mat,fill,pools){return linearPlacements(bb,mat,fill,pools);}},
+    generate(bb,mat,fill,pools,coverTest){return linearPlacements(bb,mat,fill,pools,coverTest);}},
   herringbone:{
     label:"Herringbone",
     buildPools(mat){const nm=fmtLen(mat.len)+" × "+fmtLen(mat.width);
@@ -608,6 +610,270 @@ function validateMaterial(pattern,mat){
       fmtLen(Math.max(g.m,0))+". Increase tip-to-tip or reduce width.");
   }
   return errs;}
+
+/* ---------------- CONTROL: fill engine ----------------
+   Each generated plank is clipped against the room in the plank's
+   own local frame (triangle ∩ plank per room triangle), fragments
+   are merged by cancelling shared triangulation diagonals. Because
+   clipping happens in local coords, every resulting piece polygon
+   knows exactly which original plank sides it retains — that is
+   what constrains how it may be re-cut from stock later. */
+function simplifyLoop(r){
+  const out=[];
+  for(let i=0;i<r.length;i++){
+    const p=r[(i-1+r.length)%r.length],c=r[i],q=r[(i+1)%r.length];
+    if(vlen(sub(c,p))<1e-7)continue;
+    const cr=cross(sub(c,p),sub(q,c));
+    if(Math.abs(cr)<1e-7&&dot(sub(c,p),sub(q,c))>0)continue; // collinear
+    out.push(c);}
+  return out.length>=3?out:r;}
+function mergeFragments(frags){
+  const qk=p=>Math.round(p[0]*4096)+","+Math.round(p[1]*4096);
+  const edges=new Map(); // directed key -> {a,b}
+  const dk=(a,b)=>qk(a)+">"+qk(b);
+  for(const f of frags)for(let i=0;i<f.length;i++){
+    const a=f[i],b=f[(i+1)%f.length];
+    if(qk(a)===qk(b))continue;
+    const rev=dk(b,a);
+    if(edges.has(rev))edges.delete(rev);else edges.set(dk(a,b),{a,b});}
+  const byStart=new Map();
+  for(const e of edges.values()){
+    const k=qk(e.a);if(!byStart.has(k))byStart.set(k,[]);
+    byStart.get(k).push(e);}
+  const loops=[];const used=new Set();
+  for(const e0 of edges.values()){
+    if(used.has(e0))continue;
+    const loop=[];let e=e0;let guard=10000;
+    while(e&&!used.has(e)&&guard-->0){
+      used.add(e);loop.push(e.a);
+      const cands=(byStart.get(qk(e.b))||[]).filter(x=>!used.has(x));
+      e=cands[0]||null;}
+    if(loop.length>=3&&polyArea(loop)>0.01)loops.push(simplifyLoop(loop));}
+  return loops;}
+function retainedSides(piece,stock){
+  const res=[];
+  for(let s=0;s<stock.length;s++){
+    const A=stock[s],B=stock[(s+1)%stock.length],e=sub(B,A),L=vlen(e);
+    let kept=false;
+    for(let i=0;i<piece.length&&!kept;i++){
+      const P=piece[i],Q=piece[(i+1)%piece.length];
+      if(Math.abs(cross(e,sub(P,A)))<1e-4*L&&Math.abs(cross(e,sub(Q,A)))<1e-4*L
+         &&vlen(sub(Q,P))>0.05)kept=true;}
+    res.push(kept);}
+  return res;}
+function computeFill(){
+  const errors=[...validateRoom(S.outer,S.holes),
+                ...validateMaterial(S.pattern,S.materials[S.pattern])];
+  if(errors.length)return{errors};
+  const tris=triangulate(S.outer,S.holes);
+  if(!tris)return{errors:["Could not triangulate the room — check the outline for duplicate or overlapping vertices."]};
+  const pat=PATTERNS[S.pattern],mat=S.materials[S.pattern];
+  const pools=pat.buildPools(mat);
+  const poolByKey={};pools.forEach(p=>poolByKey[p.key]=p);
+  const ob=bboxOf(S.outer);
+  const C=[(ob.x0+ob.x1)/2,(ob.y0+ob.y1)/2];
+  const rot=S.fill.rot*D2R,off=[S.fill.ox,S.fill.oy];
+  const cR=Math.cos(rot),sR=Math.sin(rot);
+  const toPat=w=>{const dx=w[0]-C[0]-off[0],dy=w[1]-C[1]-off[1];
+    return[dx*cR+dy*sR,-dx*sR+dy*cR];};
+  let pb={x0:1e18,y0:1e18,x1:-1e18,y1:-1e18};
+  for(const w of S.outer){const p=toPat(w);
+    pb.x0=Math.min(pb.x0,p[0]);pb.y0=Math.min(pb.y0,p[1]);
+    pb.x1=Math.max(pb.x1,p[0]);pb.y1=Math.max(pb.y1,p[1]);}
+  const coverTest=(px,py)=>{ // pattern-space point -> inside room?
+    const w=[C[0]+off[0]+px*cR-py*sR,C[1]+off[1]+px*sR+py*cR];
+    return pointInRegion(w,S.outer,S.holes);};
+  const gen=pat.generate(pb,mat,S.fill,pools,coverTest);
+  const pieces=[];let pid=0;
+  const rings=[S.outer,...S.holes];
+  for(let fi=0;fi<gen.placements.length;fi++){
+    const pl=gen.placements[fi],pool=poolByKey[pl.pool];
+    const TH=rot+pl.rot,cT=Math.cos(TH),sT=Math.sin(TH);
+    const T=[C[0]+off[0]+pl.ox*cR-pl.oy*sR,C[1]+off[1]+pl.ox*sR+pl.oy*cR];
+    const l2w=p=>[T[0]+p[0]*cT-p[1]*sT,T[1]+p[0]*sT+p[1]*cT];
+    const w2l=w=>{const dx=w[0]-T[0],dy=w[1]-T[1];
+      return[dx*cT+dy*sT,-dx*sT+dy*cT];};
+    const W=pool.local.map(l2w);
+    const wb=bboxOf(W);
+    if(wb.x1<ob.x0||wb.x0>ob.x1||wb.y1<ob.y0||wb.y0>ob.y1)continue;
+    // fast path: plank fully inside the room region
+    let full=W.every(p=>pointInRegion(p,S.outer,S.holes));
+    if(full)outer1:for(const ring of rings){
+      for(const v of ring)if(pointInRing(v,W)){full=false;break outer1;}
+      for(let i=0;i<ring.length;i++)for(let j=0;j<W.length;j++)
+        if(segsIntersect(ring[i],ring[(i+1)%ring.length],W[j],W[(j+1)%W.length],false))
+          {full=false;break outer1;}}
+    let loops;
+    if(full)loops=[pool.local];
+    else{
+      const frags=[];
+      for(const t of tris){
+        const tb=bboxOf(t);
+        if(tb.x1<wb.x0||tb.x0>wb.x1||tb.y1<wb.y0||tb.y0>wb.y1)continue;
+        const f=clipConvex(t.map(w2l),pool.local);
+        if(f.length>=3&&polyArea(f)>0.01)frags.push(f);}
+      if(!frags.length)continue;
+      loops=mergeFragments(frags);
+      if(!loops.length)loops=frags.map(simplifyLoop).filter(f=>polyArea(f)>0.01);}
+    for(const lp of loops){
+      const area=polyArea(lp);
+      if(area<0.01)continue;
+      const isCut=area<pool.area-0.5;
+      const world=lp.map(l2w);
+      pieces.push({id:pid++,fillIdx:fi,pool:pool.key,local:lp,world,area,
+        isCut,sides:retainedSides(lp,pool.local),label:null,src:-1,
+        small:area<pool.area*S.fill.threshold/100,labelPt:labelPoint(world)});}}
+  const coverage=pieces.reduce((s,p)=>s+p.area,0);
+  return{errors:[],pools,poolByKey,pieces,tris,shortfall:!!gen.shortfall,
+         coverage,area:roomArea(S.outer,S.holes)};}
+
+/* ---------------- CONTROL: cut optimizer ----------------
+   Packs cut pieces back into stock planks of the SAME pool
+   (shape + hand), translation only. A piece may only be placed
+   so every original plank side it retains lands on the matching
+   stock side — tongues/grooves therefore stay correct, a left
+   herringbone/chevron piece can never be cut from right stock,
+   and a linear end piece only ever comes from the correct end.
+   Any two pieces in one stock keep at least `kerf` mm between
+   them: one sacrificial blade width per separating cut into
+   pristine material. Re-trimming an already-cut edge is free,
+   which is why exactly one kerf — not two — is charged between
+   neighbouring pieces. */
+function polysOverlap(a,b){
+  for(let i=0;i<a.length;i++)for(let j=0;j<b.length;j++)
+    if(segsIntersect(a[i],a[(i+1)%a.length],b[j],b[(j+1)%b.length],false))return true;
+  return pointInRing(a[0],b)||pointInRing(b[0],a);}
+function polysMinDist(a,b){
+  let d=1e18;
+  for(let i=0;i<a.length;i++)for(let j=0;j<b.length;j++){
+    d=Math.min(d,segSegDist(a[i],a[(i+1)%a.length],b[j],b[(j+1)%b.length]));
+    if(d===0)return 0;}
+  return d;}
+function packPool(cutPieces,pool,kerf){
+  const stock=pool.local,sb=bboxOf(stock);
+  const orient=Math.sign(signedArea(stock))||1;
+  const sorted=cutPieces.slice().sort((a,b)=>b.area-a.area);
+  const stocks=[]; // each: [{piece, poly}]
+  const inStock=poly=>poly.every(p=>{
+    for(let i=0;i<stock.length;i++){
+      const A=stock[i],B=stock[(i+1)%stock.length];
+      if(cross(sub(B,A),sub(p,A))*orient<-1e-6)return false;}
+    return true;});
+  const fits=(poly,placed)=>{
+    if(!inStock(poly))return false;
+    const pb2=bboxOf(poly);
+    for(const q of placed){
+      const qb=bboxOf(q.poly);
+      const sepX=Math.max(qb.x0-pb2.x1,pb2.x0-qb.x1);
+      const sepY=Math.max(qb.y0-pb2.y1,pb2.y0-qb.y1);
+      if(sepX>=kerf||sepY>=kerf)continue;
+      if(polysOverlap(poly,q.poly))return false;
+      if(polysMinDist(poly,q.poly)<kerf-1e-6)return false;}
+    return true;};
+  const shifted=(poly,t)=>poly.map(p=>[p[0]+t[0],p[1]+t[1]]);
+  function candidates(piece,placed){
+    // constraints from retained sides: normals n with n·t = 0
+    const normals=[];
+    for(let s=0;s<stock.length;s++)if(piece.sides[s]){
+      const e=sub(stock[(s+1)%stock.length],stock[s]);
+      const L=vlen(e);if(L>0)normals.push([-e[1]/L,e[0]/L]);}
+    if(normals.length&&normals.some(n=>Math.abs(cross(normals[0],n))>1e-6))
+      return[[0,0]]; // pinned in both axes (corner pieces)
+    const pbb=bboxOf(piece.local),w=pbb.x1-pbb.x0,h=pbb.y1-pbb.y0;
+    if(normals.length){
+      // one degree of freedom along u (perp to the shared normal)
+      const u=[-normals[0][1],normals[0][0]];
+      let lo=-1e18,hi=1e18;
+      for(let i=0;i<stock.length;i++){
+        const A=stock[i],B=stock[(i+1)%stock.length],e=sub(B,A);
+        for(const p of piece.local){
+          const c0=cross(e,sub(p,A))*orient,cu=cross(e,u)*orient;
+          if(Math.abs(cu)<1e-12){if(c0<-1e-6){lo=1;hi=-1;}}
+          else if(cu>0)lo=Math.max(lo,-c0/cu);else hi=Math.min(hi,-c0/cu);}}
+      if(lo>hi)return[[0,0]];
+      const lams=new Set([lo,hi,0]);
+      const proj=poly=>poly.map(p=>dot(p,u));
+      const mine=proj(piece.local);
+      for(const q of placed){const theirs=proj(q.poly);
+        for(const a of mine)for(const b of theirs){
+          lams.add(b-a+kerf);lams.add(b-a-kerf);lams.add(b-a);}}
+      return[...lams].filter(l=>l>=lo-1e-9&&l<=hi+1e-9)
+        .sort((a,b)=>a-b).slice(0,80).map(l=>[u[0]*l,u[1]*l]);}
+    // free translation: align bounding boxes against stock and placed pieces
+    const xs=new Set([sb.x0-pbb.x0,sb.x1-pbb.x1,0]);
+    const ys=new Set([sb.y0-pbb.y0,sb.y1-pbb.y1,0]);
+    for(const q of placed){const qb=bboxOf(q.poly);
+      xs.add(qb.x1+kerf-pbb.x0);xs.add(qb.x0-kerf-pbb.x1);
+      ys.add(qb.y1+kerf-pbb.y0);ys.add(qb.y0-kerf-pbb.y1);}
+    const out=[];
+    for(const dx of xs)for(const dy of ys)out.push([dx,dy]);
+    out.sort((a,b)=>(pbb.y0+a[1])-(pbb.y0+b[1])||(pbb.x0+a[0])-(pbb.x0+b[0]));
+    return out.slice(0,120);}
+  for(const piece of sorted){
+    let placedOk=false;
+    for(const st of stocks){
+      for(const t of candidates(piece,st)){
+        const poly=shifted(piece.local,t);
+        if(fits(poly,st)){st.push({piece,poly});placedOk=true;break;}}
+      if(placedOk)break;}
+    if(!placedOk){
+      const st=[];
+      let done=false;
+      for(const t of candidates(piece,st)){
+        const poly=shifted(piece.local,t);
+        if(fits(poly,st)){st.push({piece,poly});done=true;break;}}
+      if(!done)st.push({piece,poly:piece.local}); // original position always fits
+      stocks.push(st);}}
+  const totalArea=cutPieces.reduce((s,p)=>s+p.area,0);
+  let lb=Math.max(cutPieces.length?1:0,Math.ceil(totalArea/pool.area-1e-9));
+  // corner bound: pieces that include a stock corner point (and are
+  // pinned there by retaining both adjacent sides) exclude each other
+  const ns=stock.length;
+  for(let c=0;c<ns;c++){
+    const cnt=cutPieces.filter(p=>p.sides[(c-1+ns)%ns]&&p.sides[c]&&
+      pointInRing(stock[c],p.local)).length;
+    lb=Math.max(lb,cnt);}
+  // full-span bound (rectangular stock only): rectangular pieces
+  // spanning the full width pack 1-D along the length, kerf between
+  const sbA=(sb.x1-sb.x0)*(sb.y1-sb.y0);
+  if(Math.abs(sbA-pool.area)<1e-6){
+    const fw=cutPieces.filter(p=>{
+      const b=bboxOf(p.local);
+      return p.sides[0]&&p.sides[2]&&Math.abs((b.x1-b.x0)*(b.y1-b.y0)-p.area)<1e-6;});
+    if(fw.length>=2){
+      let need=0;for(const p of fw){const b=bboxOf(p.local);need+=b.x1-b.x0+kerf;}
+      lb=Math.max(lb,Math.ceil(need/(sb.x1-sb.x0+kerf)-1e-9));}}
+  return{stocks:stocks.map(st=>st.map(x=>x.piece.id)),lowerBound:lb};}
+function assignLabelsAndStats(fill){
+  const sources=[];
+  const stats={};
+  for(const pool of fill.pools){
+    const ps=fill.pieces.filter(p=>p.pool===pool.key);
+    const uncut=ps.filter(p=>!p.isCut),cut=ps.filter(p=>p.isCut);
+    for(const p of uncut)sources.push({pool:pool.key,ids:[p.id],kind:"uncut"});
+    let lb=0,nCutSrc=0;
+    if(cut.length){
+      const r=packPool(cut,pool,S.fill.kerf);
+      lb=r.lowerBound;nCutSrc=r.stocks.length;
+      for(const ids of r.stocks)sources.push({pool:pool.key,ids,kind:"cut"});}
+    const byId={};fill.pieces.forEach(p=>byId[p.id]=p);
+    const usedArea=ps.reduce((s,p)=>s+p.area,0);
+    const total=uncut.length+nCutSrc;
+    stats[pool.key]={placed:ps.length,uncut:uncut.length,cutPieces:cut.length,
+      cutSources:nCutSrc,lowerBound:lb,total,
+      waste:total?Math.max(0,(total*pool.area-usedArea)/(total*pool.area)*100):0,
+      small:ps.filter(p=>p.small).length};}
+  const byId={};fill.pieces.forEach(p=>byId[p.id]=p);
+  const minFill=src=>Math.min(...src.ids.map(id=>byId[id].fillIdx*1000+byId[id].id));
+  sources.sort((a,b)=>minFill(a)-minFill(b));
+  sources.forEach((src,i)=>{
+    const num=i+1;
+    const ordered=src.ids.slice().sort((a,b)=>byId[a].fillIdx-byId[b].fillIdx||a-b);
+    ordered.forEach((id,k)=>{
+      byId[id].src=i;
+      byId[id].label=ordered.length>1?num+String.fromCharCode(65+k):String(num);});
+    src.num=num;src.ids=ordered;});
+  return{sources,stats};}
 </script>
 </body>
 </html>
