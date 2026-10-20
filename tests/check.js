@@ -90,6 +90,29 @@ const res2=await p2;__flushRaf();
 assert(res2.cancelled,"cancel reported");
 assert(S.fill.ox===startOx&&S.fill.oy===startOy,"cancel restores original offsets");
 
+// --- alignment shortcuts + herringbone starting rotation ---
+const selEl=document.getElementById("patternSel");
+function choosePattern(v){selEl.value=v;
+  (selEl._listeners.change||[]).forEach(fn=>fn());__flushRaf();}
+S.fill.rot=12;choosePattern("herringbone");
+assert(S.fill.rot===-45,"herringbone starts at -45 (got "+S.fill.rot+")");
+document.getElementById("alV").click();__flushRaf();
+assert(S.fill.rot===45,"herringbone Vertical sets 45");
+document.getElementById("alH").click();__flushRaf();
+assert(S.fill.rot===-45,"herringbone Horizontal sets -45");
+choosePattern("doubleHerringbone");
+assert(S.fill.rot===-45,"double herringbone starts at -45");
+choosePattern("chevron");
+document.getElementById("alH").click();__flushRaf();
+assert(S.fill.rot===90,"chevron Horizontal sets 90");
+document.getElementById("alV").click();__flushRaf();
+assert(S.fill.rot===0,"chevron Vertical sets 0");
+choosePattern("linear");
+document.getElementById("alV").click();__flushRaf();
+assert(S.fill.rot===90,"linear Vertical sets 90");
+document.getElementById("alH").click();__flushRaf();
+assert(S.fill.rot===0,"linear Horizontal sets 0");
+
 if(failures){console.error(failures+" check(s) failed");process.exitCode=1;}
 else console.log("ALL CHECKS PASSED");
 })().catch(e=>{console.error("FAIL (exception):",e&&e.stack||e);process.exitCode=1;});

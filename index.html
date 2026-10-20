@@ -609,6 +609,11 @@ const PATTERNS={
          local:[[d,0],[m+d,0],[m,W],[0,W]],area:m*W,cap:null,color:WOOD[1]}];},
     generate(bb,mat){return{placements:chevronPlacements(bb,mat),shortfall:false};}}
 };
+/* Rotation (degrees) that runs each pattern along the room's
+   length (horizontal) or across it (vertical). Herringbone weaves
+   sit at 45° to their plank axes; chevron points along Y at rest. */
+const ALIGN={linear:{h:0,v:90},herringbone:{h:-45,v:45},
+             doubleHerringbone:{h:-45,v:45},chevron:{h:90,v:0}};
 function validateMaterial(pattern,mat){
   const errs=[];
   const pos=(v,nm)=>{if(!isFinite(v)||v<=0)errs.push(nm+" must be a positive length.");};
@@ -1392,6 +1397,10 @@ function renderFillEditor(){
   let h=sliderRow("Offset X","fOxS",-1000,1000,5,f.ox,"fOx",fmtNum(f.ox),unitName())+
         sliderRow("Offset Y","fOyS",-1000,1000,5,f.oy,"fOy",fmtNum(f.oy),unitName())+
         sliderRow("Rotation","fRotS",-90,90,0.5,f.rot,"fRot",f.rot,"°");
+  const al=ALIGN[S.pattern];
+  h+="<div class='row'><label>Align</label>"+
+     "<button id='alH'"+(f.rot===al.h?" class='on'":"")+">↔ Horizontal ("+al.h+"°)</button>"+
+     "<button id='alV'"+(f.rot===al.v?" class='on'":"")+">↕ Vertical ("+al.v+"°)</button></div>";
   h+="<div class='row'><button id='btnOptimize' style='flex:1'>Optimize offsets to minimize waste</button></div>"+
      "<p class='hint'>Searches offset X/Y around the current values (one plank-length span) for the fewest planks to buy."+
      (optMsg?" <b>"+esc(optMsg)+"</b>":"")+"</p>";
@@ -1433,7 +1442,10 @@ function renderFillEditor(){
       save();renderFillEditor();update();};}
   $("fKerf").addEventListener("change",()=>{
     const v=parseLen($("fKerf").value);if(v!=null&&v>=0)f.kerf=v;save();update();});
-  $("btnOptimize").onclick=()=>optimizeOffsets();}
+  $("btnOptimize").onclick=()=>optimizeOffsets();
+  const setRot=v=>{f.rot=v;save();renderFillEditor();update();};
+  $("alH").onclick=()=>setRot(ALIGN[S.pattern].h);
+  $("alV").onclick=()=>setRot(ALIGN[S.pattern].v);}
 function plankTotalAt(ox,oy){
   S.fill.ox=ox;S.fill.oy=oy;
   const f=computeFill();
@@ -1567,7 +1579,11 @@ function bindHeader(){
     $(id).addEventListener("change",renderSVG);
   $("optCancel").onclick=()=>{optCancelRequested=true;};
   $("patternSel").addEventListener("change",()=>{
-    S.pattern=$("patternSel").value;save();
+    S.pattern=$("patternSel").value;
+    // Herringbone reads along the room at -45°; start there.
+    if(S.pattern==="herringbone"||S.pattern==="doubleHerringbone")
+      S.fill.rot=ALIGN[S.pattern].h;
+    save();
     renderMatEditor();renderFillEditor();update();});
   window.addEventListener("beforeunload",()=>{
     try{localStorage.setItem(LS_KEY,JSON.stringify(S));}catch(e){}});}
