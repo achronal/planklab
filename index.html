@@ -83,6 +83,13 @@ table.stats tr[data-src]{cursor:pointer}
 .sub{color:var(--muted);font-size:11.5px}
 .red{color:#f08a8a}.green{color:#a5cf9a}
 #chevDiagram{display:block;margin:6px auto}
+#optOverlay{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+  background:rgba(23,21,18,.55);z-index:6}
+#optOverlay .optCard{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:16px 18px;width:320px;box-shadow:0 10px 32px rgba(0,0,0,.5)}
+#optOverlay .barWrap{height:8px;background:#161310;border:1px solid var(--line);
+  border-radius:4px;overflow:hidden;margin:10px 0 8px}
+#optBar{height:100%;width:0%;background:var(--accent);transition:width .15s}
 @media (max-width:980px){main{grid-template-columns:250px 1fr 290px}}
 </style>
 </head>
@@ -135,6 +142,12 @@ table.stats tr[data-src]{cursor:pointer}
     <svg id="svg"></svg>
     <div id="banner"></div>
     <div id="toolHint"></div>
+    <div id="optOverlay"><div class="optCard">
+      <b>Optimizing offsets…</b>
+      <div class="barWrap"><div id="optBar"></div></div>
+      <div id="optText" class="sub"></div>
+      <div class="row" style="margin-top:10px"><button id="optCancel">Cancel</button></div>
+    </div></div>
     <div id="stageBar">
       <button id="zoomOut">−</button><button id="zoomIn">+</button>
       <span class="z" id="zoomInfo"></span><span class="z" id="cursorInfo"></span>
@@ -877,6 +890,66 @@ function assignLabelsAndStats(fill){
     src.num=num;src.ids=ordered;});
   return{sources,stats};}
 
+/* ---------------- CONTROL: offset optimizer ----------------
+   Hand-tunable constants — deliberately NOT exposed in the UI.
+   MAX_ATTEMPTS caps total layout evaluations (order of hundreds);
+   KEEP_N is how many best grid points survive each refinement;
+   GRID is the side of the initial grid (GRID×GRID points spanning
+   one largest-plank dimension, centred on the current offsets);
+   MIN_STEP_MM stops refinement once steps get this small. */
+const OPTIMIZER={MAX_ATTEMPTS:400,KEEP_N:5,GRID:5,MIN_STEP_MM:1};
+/* Adaptive grid search over (ox,oy): evaluate a GRID×GRID lattice,
+   keep the KEEP_N lowest scores, subdivide each survivor into a
+   2×2 of half-step children, repeat. No gradient assumptions — the
+   plank count is a stepped, partly stochastic function of offsets.
+   scoreFn(x,y) -> {tot, small} (lower better) or null if invalid.
+   onProgress(attempts,best) may return a promise (UI paint yield);
+   shouldCancel() -> true aborts. Searches one pattern period, so
+   local minima are fine: the user fine-tunes afterwards. */
+async function searchOffsets(scoreFn,start,span,opt,onProgress,shouldCancel){
+  const snap=v=>Math.round(v*10)/10;
+  const cache=new Map();let attempts=0,cancelled=false;
+  let best=null;
+  const cmp=(a,b)=>a.tot-b.tot||a.small-b.small||
+    (Math.hypot(a.x-start.x,a.y-start.y)-Math.hypot(b.x-start.x,b.y-start.y));
+  async function evalPt(x,y){
+    x=snap(x);y=snap(y);
+    const key=x+","+y;
+    if(cache.has(key))return cache.get(key);
+    if(attempts>=opt.MAX_ATTEMPTS)return null;
+    if(shouldCancel&&shouldCancel()){cancelled=true;return null;}
+    attempts++;
+    const sc=scoreFn(x,y);
+    const pt=sc?{x,y,tot:sc.tot,small:sc.small||0}:null;
+    cache.set(key,pt);
+    if(pt&&(!best||cmp(pt,best)<0))best=pt;
+    if(onProgress&&attempts%6===0)await onProgress(attempts,best);
+    return pt;}
+  let step=span/opt.GRID;
+  let cand=[];
+  const half=(opt.GRID-1)/2;
+  for(let i=0;i<opt.GRID;i++)for(let j=0;j<opt.GRID;j++){
+    const pt=await evalPt(start.x+(i-half)*step,start.y+(j-half)*step);
+    if(pt)cand.push(pt);
+    if(cancelled)break;}
+  cand.sort(cmp);cand=cand.slice(0,opt.KEEP_N);
+  while(!cancelled&&cand.length&&step>=opt.MIN_STEP_MM&&attempts<opt.MAX_ATTEMPTS){
+    const off=step/4; // 2x2 children at quarter-step -> half spacing
+    const pool=cand.slice();
+    for(const c of cand){
+      for(const dx of[-off,off])for(const dy of[-off,off]){
+        const pt=await evalPt(c.x+dx,c.y+dy);
+        if(pt&&!pool.includes(pt))pool.push(pt);}
+      if(cancelled||attempts>=opt.MAX_ATTEMPTS)break;}
+    pool.sort(cmp);cand=pool.slice(0,opt.KEEP_N);
+    step/=2;
+    // converged: survivors agree on score and have clustered together
+    const same=cand.every(c=>c.tot===cand[0].tot&&c.small===cand[0].small);
+    const spread=cand.length?Math.max(...cand.map(c=>Math.hypot(c.x-cand[0].x,c.y-cand[0].y))):0;
+    if(same&&spread<=step)break;}
+  if(onProgress)await onProgress(attempts,best);
+  return{best,attempts,cancelled};}
+
 /* ============================================================
    UI LAYER — rendering + input only. Every number shown comes
    from the control layer above.
@@ -889,6 +962,7 @@ let highlightSrc=-1;
 let cam={cx:2100,cy:1500,k:0.15};
 let ptr={down:false,moved:0,lx:0,ly:0,dragV:null,panning:false,space:false};
 let cursorW=[0,0],snapGuide=null;
+let optRunning=false,optCancelRequested=false,optMsg="";
 const svg=$("svg"),stage=$("stage");
 function stageSize(){const r=stage.getBoundingClientRect();return[r.width,r.height];}
 function w2s(p){const[w,h]=stageSize();
@@ -1307,6 +1381,9 @@ function renderFillEditor(){
   let h=sliderRow("Offset X","fOxS",-1000,1000,5,f.ox,"fOx",fmtNum(f.ox),unitName())+
         sliderRow("Offset Y","fOyS",-1000,1000,5,f.oy,"fOy",fmtNum(f.oy),unitName())+
         sliderRow("Rotation","fRotS",-90,90,0.5,f.rot,"fRot",f.rot,"°");
+  h+="<div class='row'><button id='btnOptimize' style='flex:1'>Optimize offsets to minimize waste</button></div>"+
+     "<p class='hint'>Searches offset X/Y around the current values (one plank-length span) for the fewest planks to buy."+
+     (optMsg?" <b>"+esc(optMsg)+"</b>":"")+"</p>";
   if(S.pattern==="linear"){
     h+="<div class='row'><label>Layout rule</label><select id='fRule' style='flex:1'>"+
       "<option value='random'>Random lengths (best for big rooms)</option>"+
@@ -1344,7 +1421,54 @@ function renderFillEditor(){
     $("fReroll").onclick=()=>{f.seed=Math.floor(Math.random()*1e9);
       save();renderFillEditor();update();};}
   $("fKerf").addEventListener("change",()=>{
-    const v=parseLen($("fKerf").value);if(v!=null&&v>=0)f.kerf=v;save();update();});}
+    const v=parseLen($("fKerf").value);if(v!=null&&v>=0)f.kerf=v;save();update();});
+  $("btnOptimize").onclick=()=>optimizeOffsets();}
+function plankTotalAt(ox,oy){
+  S.fill.ox=ox;S.fill.oy=oy;
+  const f=computeFill();
+  if(f.errors.length)return null;
+  const{stats}=assignLabelsAndStats(f);
+  let tot=0,small=0;
+  for(const p of f.pools){tot+=stats[p.key].total;small+=stats[p.key].small;}
+  return{tot,small};}
+async function optimizeOffsets(){
+  if(optRunning)return{best:null,attempts:0,cancelled:true};
+  if(!R||R.errors.length){showBanner("Fix the current problem first, then optimize.");
+    return{best:null,attempts:0,cancelled:true};}
+  optRunning=true;optCancelRequested=false;
+  const start={x:S.fill.ox,y:S.fill.oy};
+  let startTot=0;for(const p of R.pools)startTot+=R.stats[p.key].total;
+  const pools=PATTERNS[S.pattern].buildPools(S.materials[S.pattern]);
+  const span=Math.max(...pools.map(p=>{const b=bboxOf(p.local);
+    return Math.max(b.x1-b.x0,b.y1-b.y0);}));
+  const overlay=$("optOverlay"),bar=$("optBar"),txt=$("optText");
+  overlay.style.display="flex";bar.style.width="0%";
+  txt.textContent="Starting…";
+  const btn=$("btnOptimize");if(btn)btn.disabled=true;
+  try{
+    const res=await searchOffsets(plankTotalAt,start,span,OPTIMIZER,
+      async(attempts,best)=>{
+        bar.style.width=Math.min(100,attempts/OPTIMIZER.MAX_ATTEMPTS*100)+"%";
+        txt.textContent=attempts+" / "+OPTIMIZER.MAX_ATTEMPTS+" attempts · best so far "+
+          (best?best.tot+" planks":"–")+" (started at "+startTot+")";
+        await new Promise(r=>requestAnimationFrame(r));},
+      ()=>optCancelRequested);
+    if(res.cancelled||!res.best){
+      S.fill.ox=start.x;S.fill.oy=start.y;
+      optMsg="Optimizer cancelled — offsets unchanged.";}
+    else{
+      S.fill.ox=res.best.x;S.fill.oy=res.best.y;
+      optMsg="Optimizer: "+startTot+" → "+res.best.tot+" planks in "+
+        res.attempts+" attempts. Fine-tune with the sliders if you like.";}
+    overlay.style.display="none";optRunning=false;
+    renderFillEditor();update();
+    return{best:res.best,attempts:res.attempts,cancelled:res.cancelled||!res.best};
+  }catch(e){
+    S.fill.ox=start.x;S.fill.oy=start.y;
+    overlay.style.display="none";optRunning=false;
+    showBanner("Optimizer failed: "+e.message);
+    renderFillEditor();update();
+    return{best:null,attempts:0,cancelled:true};}}
 function renderResults(){
   const el=$("results");
   if(!R||R.errors.length){
@@ -1430,6 +1554,7 @@ function bindHeader(){
   $("zoomOut").onclick=()=>{cam.k=clamp(cam.k/1.25,0.005,4);renderSVG();};
   for(const id of["showLabels","showCutEdges","showGrid"])
     $(id).addEventListener("change",renderSVG);
+  $("optCancel").onclick=()=>{optCancelRequested=true;};
   $("patternSel").addEventListener("change",()=>{
     S.pattern=$("patternSel").value;save();
     renderMatEditor();renderFillEditor();update();});

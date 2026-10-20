@@ -19,9 +19,12 @@ between machines.
    (length ≥ 2 × width), Chevron (width + tip-to-tip length, one
    mitre angle for the whole pattern). Units toggle between decimal
    inches and mm at any time.
-3. **Fill** — offset X/Y and rotation update everything live. Linear
-   adds a layout rule (random lengths with seeded re-roll, random
-   offset, brick ½, stagger ⅓) and a length-mix distribution.
+3. **Fill** — offset X/Y and rotation update everything live, or hit
+   **Optimize offsets to minimize waste** to search one plank-length
+   span around the current offsets for the fewest planks to buy, then
+   fine-tune by hand. Linear adds a layout rule (random lengths with
+   seeded re-roll, random offset, brick ½, stagger ⅓) and a
+   length-mix distribution.
 4. **Results** — pieces needing a cut show orange cut edges; pieces
    under the configurable % threshold turn red. Every piece carries
    its source-plank number, centred on the visible part; pieces cut
@@ -56,3 +59,8 @@ show a proven lower bound next to the achieved count and say
 Adding a pattern = one new entry in `PATTERNS` (a `buildPools`
 material definition plus a `generate` placement field); clipping,
 counting, labelling, and cut optimization work unchanged.
+
+Headless checks (geometry, fill counts, offset optimizer) run with
+`node tests/check.js`. The optimizer's attempt cap and survivor count
+are the `OPTIMIZER` constants near the top of the control layer —
+easy to hand-tune, deliberately not shown in the UI.
