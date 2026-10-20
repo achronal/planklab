@@ -136,6 +136,7 @@ assert(/cut 1:/.test(guide)&&(guide.includes("from square")||guide.includes("squ
 assert(guide.includes("along "),"cut guide gives measurements from the datum end");
 const svgW=+((guide.match(/<svg width='(\d+)'/)||[])[1]||0);
 assert(svgW>=400,"cut diagram is large (width "+svgW+")");
+assert(svgW<=516,"diagram fits the card content box, no horizontal overflow (width "+svgW+")");
 assert(document.getElementById("cutGuideFloat").style.display==="flex",
   "cut guide floats over the canvas on selection");
 const gpos=n=>guide.indexOf('data-layer="'+n+'"');

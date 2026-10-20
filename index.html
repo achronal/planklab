@@ -103,7 +103,9 @@ table.stats tr[data-src]{cursor:pointer}
   background:var(--panel2);border-bottom:1px solid var(--line);padding:8px 12px;
   cursor:grab;user-select:none;touch-action:none;font-weight:650;font-size:13px}
 #cutGuideHead:active{cursor:grabbing}
-#cutGuide{padding:10px 12px 12px;overflow-y:auto}
+#cutGuide{padding:10px 12px 12px;overflow-y:auto;overflow-x:hidden}
+#cutGuide svg{max-width:100%}
+#cutGuideTitle{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 @media (max-width:980px){main{grid-template-columns:250px 1fr 290px}}
 </style>
 </head>
@@ -1618,7 +1620,11 @@ function renderCutGuide(){
   const along=p=>dot(sub(p,O),u),across=p=>dot(sub(p,O),n);
   let aMin=1e18,aMax=-1e18;
   for(const p of stock){aMin=Math.min(aMin,across(p));aMax=Math.max(aMax,across(p));}
-  const W=Math.round(clamp(stageSize()[0]*0.62,380,560)),padL=34,padT=34;
+  // Size the diagram to the floating card's own content box (card is
+  // min(560px, 88% of stage) in CSS) minus its padding, border and a
+  // scrollbar allowance — sizing from the stage alone overflowed it.
+  const floatW=Math.min(560,stageSize()[0]*0.88);
+  const W=Math.max(300,Math.round(floatW-44)),padL=34,padT=34;
   const sc=Math.min((W-padL-12)/(sb.x1-sb.x0),200/Math.max(sb.y1-sb.y0,1));
   const H=padT+(sb.y1-sb.y0)*sc+58;
   const X=p=>padL+(p[0]-sb.x0)*sc, Y=p=>padT+(p[1]-sb.y0)*sc;
@@ -1666,7 +1672,7 @@ function renderCutGuide(){
       G.add("dims","<text x='"+cx+"' y='"+ty+
         "' font-size='10.5' fill='#ece5d8' text-anchor='middle'>"+esc(l.txt)+"</text>");}}
   G.add("notes","<text x='"+(X(O)-20)+"' y='"+(Y(O)+5)+"' font-size='15' fill='#2ee66b'>★</text>");
-  G.add("notes","<text x='"+padL+"' y='"+(H-10)+"' font-size='10.5' fill='#a99f8d'>★ datum end — measurements run along the plank from ★; across is from the ★-side long edge.</text>");
+  G.add("notes","<text x='"+padL+"' y='"+(H-10)+"' font-size='10.5' fill='#a99f8d'>★ datum end · along / across measured from ★</text>");
   const g="<svg width='"+W+"' height='"+H+"' style='display:block'>"+G.render()+"</svg>";
   let rows="";
   for(const ce of cuts){
@@ -1678,7 +1684,7 @@ function renderCutGuide(){
       (ang<0.05?"square cut (0°)":"miter <b>"+ang.toFixed(1)+"°</b> from square")+
       (ang>60?" <span class='red'>(nearer a rip cut — table saw)</span>":"")+"</div>";}
   el.innerHTML=g+rows+
-    "<p class='hint'>Long side on the bench, ★ end against your stop. Kerf "+fmtLen(S.fill.kerf)+
+    "<p class='hint'>Long side on the bench, ★ end against your stop. “Across” is measured from the ★-side long edge. Kerf "+fmtLen(S.fill.kerf)+
     " between pieces is already allowed for in how they pack.</p>";}
 /* Floating cut guide: drag by its title bar, snaps to the nearest
    stage corner on drop. The corner is a UI preference only — kept
