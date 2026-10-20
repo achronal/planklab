@@ -442,6 +442,172 @@ function triangulate(outerIn,holesIn){
   if(idx.length===3){const t=idx.map(i=>ring[i]);
     if(polyArea(t)>1e-9)tris.push(t);}
   return tris;}
+
+/* ---------------- CONTROL: pattern registry ----------------
+   A pattern = buildPools(material) -> stock pools (shape+hand)
+   + generate(bbox, material, fill) -> placements in pattern space.
+   Placement: {pool, ox, oy, rot} mapping pool.local -> pattern space
+   via p -> [ox,oy] + R(rot)*p. Add a pattern by adding one entry. */
+const WOOD=["#c99e6b","#bb8d58","#d6ad76","#ab7f4e","#c3955f","#b0824f"];
+const rectLocal=(L,W)=>[[0,0],[L,0],[L,W],[0,W]];
+function herringbonePlacements(bb,a,b,poolL,poolR,split){
+  // Lattice: pair {H at o, V at o} repeated by s=(b,b), w=(a,-a).
+  // (Works for any a > b; UI enforces a >= 2b per product rules.)
+  const out=[];const B=split?b/2:b;
+  const inv=(x,y)=>[(x+y)/(2*b),(x-y)/(2*a)];
+  const cs=[[bb.x0,bb.y0],[bb.x1,bb.y0],[bb.x1,bb.y1],[bb.x0,bb.y1]]
+    .map(c=>inv(c[0],c[1]));
+  let i0=1e9,i1=-1e9,j0=1e9,j1=-1e9;
+  for(const c of cs){i0=Math.min(i0,c[0]);i1=Math.max(i1,c[0]);
+    j0=Math.min(j0,c[1]);j1=Math.max(j1,c[1]);}
+  const M=3;
+  for(let i=Math.floor(i0)-M;i<=Math.ceil(i1)+M;i++)
+   for(let j=Math.floor(j0)-M;j<=Math.ceil(j1)+M;j++){
+    const ox=b*i+a*j, oy=b*i-a*j;
+    if(!split){
+      out.push({pool:poolL,ox,oy,rot:0});
+      out.push({pool:poolR,ox,oy,rot:Math.PI/2});
+    }else{
+      out.push({pool:poolL,ox,oy,rot:0});
+      out.push({pool:poolL,ox,oy:oy+B,rot:0});
+      out.push({pool:poolR,ox,oy,rot:Math.PI/2});
+      out.push({pool:poolR,ox:ox-B,oy,rot:Math.PI/2});
+    }}
+  return out;}
+function linearPlacements(bb,mat,fill,pools){
+  const W=mat.width,lens=mat.lengths;
+  const rng=mulberry32(fill.seed|0);
+  const remaining=lens.map(e=>e.cap==null?Infinity:e.cap);
+  const out=[];let shortfall=false;let seqCounter=0;
+  const emit=(si,x,y)=>{if(remaining[si]<=0)return false;
+    remaining[si]--;out.push({pool:pools[si].key,ox:x,oy:y,rot:0});return true;};
+  const yStart=Math.floor(bb.y0/W)*W;
+  let prevJoints=[];
+  for(let y=yStart;y<bb.y1;y+=W){
+    const k=Math.round(y/W);const joints=[];
+    if(fill.rule==="brick"||fill.rule==="third"||fill.rule==="randomOffset"){
+      const period=lens.reduce((s,e)=>s+e.len,0);
+      let phase= fill.rule==="brick"?((k%2+2)%2)*(period/2)
+        : fill.rule==="third"?((k%3+3)%3)*(period/3) : rng()*period;
+      // find tape segment containing phase
+      let si=0,acc=0;
+      while(si<lens.length-1&&acc+lens[si].len<=phase){acc+=lens[si].len;si++;}
+      let x=bb.x0-(phase-acc);
+      while(x<bb.x1){
+        let tries=0;
+        while(remaining[si]<=0&&tries<lens.length){si=(si+1)%lens.length;tries++;}
+        if(remaining[si]<=0){shortfall=true;break;}
+        emit(si,x,y);x+=lens[si].len;joints.push(x);
+        si=(si+1)%lens.length;}
+    }else{ // random lengths
+      const maxLen=Math.max(...lens.map(e=>e.len));
+      let x=bb.x0-rng()*maxLen*0.9;
+      const pick=()=>{
+        let cand=lens.map((e,i)=>i).filter(i=>remaining[i]>0);
+        if(!cand.length)return -1;
+        const capped=cand.filter(i=>lens[i].cap!=null);
+        if(capped.length)cand=capped; // spend capped stock first (maximally used)
+        if(fill.distribution==="sequence"){
+          for(let t=0;t<lens.length;t++){
+            const i=(seqCounter+t)%lens.length;
+            if(cand.includes(i)){seqCounter=i+1;return i;}}
+          return cand[0];}
+        if(fill.distribution==="proportional"){
+          let tot=0;for(const i of cand)tot+=lens[i].len;
+          let r=rng()*tot;
+          for(const i of cand){r-=lens[i].len;if(r<=0)return i;}
+          return cand[cand.length-1];}
+        return cand[Math.floor(rng()*cand.length)];};
+      while(x<bb.x1){
+        let si=pick();if(si<0){shortfall=true;break;}
+        if(fill.distribution!=="sequence"){
+          for(let t=0;t<10;t++){
+            const joint=x+lens[si].len;
+            const clash=joint<bb.x1&&prevJoints.some(j=>Math.abs(j-joint)<W);
+            if(!clash)break;
+            const alt=pick();if(alt<0)break;si=alt;}}
+        emit(si,x,y);x+=lens[si].len;joints.push(x);}
+    }
+    prevJoints=joints;}
+  return{placements:out,shortfall};}
+function chevronGeom(mat){
+  const W=mat.width,T=mat.tip,al=mat.angle*D2R;
+  const d=W/Math.tan(al);            // slant run of the mitred end
+  const m=T-d;                       // long-edge length (tip-to-tip T = m + d)
+  return{W,T,al,d,m,s:W/Math.sin(al)};}
+function chevronPlacements(bb,mat){
+  const{W,al,d,m,s}=chevronGeom(mat);
+  const rotL=(90-mat.angle)*D2R, rotR=(mat.angle-90)*D2R;
+  const OL=[-m*Math.sin(al),-m*Math.cos(al)];
+  const OR=[-W*Math.cos(al), s-W*Math.sin(al)];
+  const Tx=2*m*Math.sin(al), Ty=s;
+  const out=[];
+  const i0=Math.floor((bb.x0-Tx)/Tx),i1=Math.ceil((bb.x1+Tx)/Tx);
+  const j0=Math.floor((bb.y0-Ty*2)/Ty),j1=Math.ceil((bb.y1+Ty*2)/Ty);
+  for(let j=j0;j<=j1;j++)for(let i=i0;i<=i1;i++){
+    out.push({pool:"chL",ox:OL[0]+i*Tx,oy:OL[1]+j*Ty,rot:rotL});
+    out.push({pool:"chR",ox:OR[0]+i*Tx,oy:OR[1]+j*Ty,rot:rotR});}
+  return out;}
+const PATTERNS={
+  linear:{
+    label:"Linear",
+    buildPools(mat){return mat.lengths.map((e,i)=>({
+      key:"lin"+i,hand:"",name:fmtLen(e.len)+" × "+fmtLen(mat.width),
+      dim:[e.len,mat.width],local:rectLocal(e.len,mat.width),
+      area:e.len*mat.width,cap:e.cap,color:WOOD[i%WOOD.length]}));},
+    generate(bb,mat,fill,pools){return linearPlacements(bb,mat,fill,pools);}},
+  herringbone:{
+    label:"Herringbone",
+    buildPools(mat){const nm=fmtLen(mat.len)+" × "+fmtLen(mat.width);
+      return["L","R"].map((h,i)=>({key:"hb"+h,hand:h,name:nm+" ("+h+")",
+        dim:[mat.len,mat.width],local:rectLocal(mat.len,mat.width),
+        area:mat.len*mat.width,cap:null,color:WOOD[i]}));},
+    generate(bb,mat){return{placements:herringbonePlacements(
+      bb,mat.len,mat.width,"hbL","hbR",false),shortfall:false};}},
+  doubleHerringbone:{
+    label:"Double herringbone",
+    buildPools(mat){const nm=fmtLen(mat.len)+" × "+fmtLen(mat.width);
+      return["L","R"].map((h,i)=>({key:"dh"+h,hand:h,name:nm+" ("+h+")",
+        dim:[mat.len,mat.width],local:rectLocal(mat.len,mat.width),
+        area:mat.len*mat.width,cap:null,color:WOOD[i]}));},
+    generate(bb,mat){return{placements:herringbonePlacements(
+      bb,mat.len,mat.width*2,"dhL","dhR",true),shortfall:false};}},
+  chevron:{
+    label:"Chevron",
+    buildPools(mat){const{d,m,W}=chevronGeom(mat);
+      const nm="tip "+fmtLen(mat.tip)+" × "+fmtLen(mat.width);
+      return[
+        {key:"chL",hand:"L",name:nm+" (L)",dim:[mat.tip,mat.width],
+         local:[[0,0],[m,0],[m+d,W],[d,W]],area:m*W,cap:null,color:WOOD[0]},
+        {key:"chR",hand:"R",name:nm+" (R)",dim:[mat.tip,mat.width],
+         local:[[d,0],[m+d,0],[m,W],[0,W]],area:m*W,cap:null,color:WOOD[1]}];},
+    generate(bb,mat){return{placements:chevronPlacements(bb,mat),shortfall:false};}}
+};
+function validateMaterial(pattern,mat){
+  const errs=[];
+  const pos=(v,nm)=>{if(!isFinite(v)||v<=0)errs.push(nm+" must be a positive length.");};
+  if(pattern==="linear"){
+    pos(mat.width,"Plank width");
+    if(!mat.lengths.length)errs.push("Add at least one plank length.");
+    if(mat.lengths.length>5)errs.push("Linear allows at most 5 lengths.");
+    mat.lengths.forEach((e,i)=>{pos(e.len,"Length "+(i+1));
+      if(e.cap!=null&&(!Number.isInteger(e.cap)||e.cap<0))
+        errs.push("Stock limit for length "+(i+1)+" must be a whole number ≥ 0, or blank.");});
+    if(mat.lengths.length&&mat.lengths.every(e=>e.cap!=null))
+      errs.push("At least one length must be unlimited (blank limit) so the room can always be filled.");
+  }else if(pattern==="herringbone"||pattern==="doubleHerringbone"){
+    pos(mat.len,"Plank length");pos(mat.width,"Plank width");
+    if(isFinite(mat.len)&&isFinite(mat.width)&&mat.len<2*mat.width)
+      errs.push("Herringbone needs length ≥ 2 × width (currently "+
+        (mat.len/mat.width).toFixed(2)+"×).");
+  }else if(pattern==="chevron"){
+    pos(mat.width,"Plank width");pos(mat.tip,"Tip-to-tip length");
+    const g=chevronGeom(mat);
+    if(!(g.m>mat.width))errs.push(
+      "Tip-to-tip length is too short for this width/angle: the long edge would be "+
+      fmtLen(Math.max(g.m,0))+". Increase tip-to-tip or reduce width.");
+  }
+  return errs;}
 </script>
 </body>
 </html>
