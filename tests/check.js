@@ -214,6 +214,33 @@ renderRoomInfo();
 assert(/Perimeter [\d.]+ m /.test(document.getElementById("roomInfo").innerHTML+" "),
   "room card shows perimeter in metres in metric");
 
+// --- edge vertex badges + add-vertex (button and double-click) ---
+choosePattern("linear");
+S.outer=[[0,0],[4200,0],[4200,3000],[0,3000]];S.holes=[];S.locked=false;
+setMode("edit");fitView();update();__flushRaf();
+sel={type:"edge",ring:-1,idx:0};renderSVG();
+const svg2=document.getElementById("svg").innerHTML;
+assert(svg2.includes(">V1<")&&svg2.includes(">V2<"),
+  "selected edge badges its vertices V1/V2 on the canvas");
+renderInspector(true);
+assert(document.getElementById("inspector").innerHTML.includes("edge V1 → V2"),
+  "inspector names the edge by its V labels");
+const nBefore=S.outer.length;
+document.getElementById("addMidVt").click();__flushRaf();
+assert(S.outer.length===nBefore+1&&Math.abs(S.outer[1][0]-2100)<1e-6&&S.outer[1][1]===0,
+  "Add vertex at midpoint inserts at the edge midpoint");
+sel=null;lastPtrClick=null;
+const scr=w2s([1000,0]);
+const firePd=()=>(svg._listeners.pointerdown||[]).forEach(fn=>
+  fn({clientX:scr[0],clientY:scr[1],button:0,pointerId:1}));
+const n2=S.outer.length;
+firePd();__flushRaf();
+assert(S.outer.length===n2,"single click on edge does not insert a vertex");
+firePd();__flushRaf();
+assert(S.outer.length===n2+1,"double-click on edge inserts a vertex");
+assert(S.outer.some(p=>Math.abs(p[0]-1000)<2&&p[1]===0),
+  "double-clicked vertex lies exactly on the edge");
+
 if(failures){console.error(failures+" check(s) failed");process.exitCode=1;}
 else console.log("ALL CHECKS PASSED");
 })().catch(e=>{console.error("FAIL (exception):",e&&e.stack||e);process.exitCode=1;});
@@ -221,3 +248,15 @@ else console.log("ALL CHECKS PASSED");
 
 new vm.Script(HARNESS + m[1] + ASSERTIONS, { filename: "planklab-check.js" })
   .runInThisContext();
+
+// Static markup checks (outside the VM).
+for (const [ok, msg] of [
+  [html.includes('class="infoIcon"'), "info icon present next to autosave status"],
+  [/title="[^"]*Export JSON[^"]*persistent/.test(html),
+   "info tooltip warns storage is temporary and points at Export JSON"],
+  [!/\.greeting\{[^}]*position\s*:\s*sticky/.test(html),
+   "greeting is static content, not sticky/floating"],
+]) {
+  if (!ok) { console.error("FAIL:", msg); process.exitCode = 1; }
+  else console.log("ok -", msg);
+}
