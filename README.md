@@ -31,8 +31,8 @@ Found a bug or have an idea? Please
    fine-tune by hand. Linear adds a layout rule (random lengths with
    seeded re-roll, random offset, brick ½, stagger ⅓) and a
    length-mix distribution.
-4. **Results** — pieces needing a cut are hatched (toggleable);
-   pieces under the configurable % threshold turn red. Every piece carries
+4. **Results** — pieces needing a cut are coloured blue-grey
+   (toggleable); pieces under the configurable % threshold turn red. Every piece carries
    its source-plank number, centred on the visible part; pieces cut
    from one shared plank are numbered 12A, 12B, … "Cut from" counts
    already reuse offcuts optimally (see below). Click any cut piece

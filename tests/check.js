@@ -135,23 +135,27 @@ assert(svgHtml.includes("#2ee66b"),"selection highlight is bright green");
 assert(svgHtml.indexOf("#2ee66b")>svgHtml.indexOf("#e8c98f"),
   "highlight is drawn above pieces and room outline (top layer)");
 const cpos=n=>svgHtml.indexOf('data-layer="'+n+'"');
-assert(cpos("pieces")>=0&&cpos("pieces")<cpos("cutTint")&&
-  cpos("cutTint")<cpos("area")&&cpos("area")<cpos("highlight")&&
+assert(cpos("pieces")>=0&&cpos("pieces")<cpos("area")&&
+  cpos("area")<cpos("highlight")&&
   cpos("highlight")<cpos("labels")&&cpos("labels")<cpos("handles"),
   "canvas layers render in declared z-order");
-// cut pieces are hatched; the old perimeter edge marks are gone
-const hatches=(svgHtml.match(/url\(#cutHatch\)/g)||[]).length;
-const nCut=R.pieces.filter(p=>p.isCut).length;
-assert(hatches===nCut&&nCut>0,
-  "every cut piece is hatched ("+hatches+"/"+nCut+")");
-assert(!svgHtml.includes("#ff7a45"),
-  "no orange perimeter cut marks remain on the canvas");
+// cut pieces are coloured toward steel blue; no hatching, no marks
+assert(cutTintColor("#c99e6b")==="#7a95a1",
+  "cut tint blends shape colour toward steel blue ("+cutTintColor("#c99e6b")+")");
+const aCut=R.pieces.find(p=>p.isCut&&!p.small);
+const tintHex=cutTintColor(R.poolByKey[aCut.pool].color);
+const tinted=(svgHtml.match(new RegExp('fill="'+tintHex+'"',"g"))||[]).length;
+const expectedTint=R.pieces.filter(p=>p.isCut&&!p.small&&p.pool===aCut.pool).length;
+assert(tinted===expectedTint&&expectedTint>0,
+  "every cut piece of the shape uses the cut colour ("+tinted+"/"+expectedTint+")");
+assert(!svgHtml.includes("cutHatch")&&!svgHtml.includes("#ff7a45"),
+  "no hatching and no perimeter cut marks remain on the canvas");
 document.getElementById("showCutTint").checked=false;renderSVG();
-assert(!document.getElementById("svg").innerHTML.includes("url(#cutHatch)"),
-  "toggling cut tint off removes the hatching");
+assert(!document.getElementById("svg").innerHTML.includes('fill="'+tintHex+'"'),
+  "toggling cut colour off restores plain shape colours");
 document.getElementById("showCutTint").checked=true;renderSVG();
-assert(document.getElementById("svg").innerHTML.includes("url(#cutHatch)"),
-  "toggling cut tint back on restores the hatching");
+assert(document.getElementById("svg").innerHTML.includes('fill="'+tintHex+'"'),
+  "toggling cut colour back on restores the tint");
 const guide=document.getElementById("cutGuide").innerHTML;
 assert(guide.includes("<svg")&&guide.includes("datum"),
   "cut guide shows the source plank diagram with datum");
