@@ -68,6 +68,10 @@ table.stats tr.tot td{border-top:1px solid var(--line);font-weight:650;border-bo
 table.stats tr[data-src]{cursor:pointer}
 #stage{position:relative;background:var(--canvas);min-width:0;overflow:hidden}
 #svg{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
+/* Drags that start on the canvas must not start a text selection.
+   Scoped to the workspace only — side panels and the floating cut
+   guide keep normal selectable text for copying. */
+#svg,#svg text,#stageBar,#toolHint,#banner{user-select:none;-webkit-user-select:none}
 #stageBar{position:absolute;left:10px;bottom:10px;display:flex;gap:6px;align-items:center;
   background:rgba(32,29,25,.92);border:1px solid var(--line);border-radius:8px;padding:5px 8px}
 #stageBar .z{min-width:118px;color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
@@ -1222,6 +1226,7 @@ function showBanner(msg){
   if(msg){b.innerHTML=esc(msg);b.style.display="block";}
   else b.style.display="none";}
 svg.addEventListener("pointerdown",e=>{
+  if(e.button===0)e.preventDefault(); // no native drag-selection from canvas drags
   svg.setPointerCapture(e.pointerId);
   const w=s2w(e.clientX,e.clientY);cursorW=w;
   ptr.down=true;ptr.moved=0;ptr.lx=e.clientX;ptr.ly=e.clientY;ptr.dragV=null;

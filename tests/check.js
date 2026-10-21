@@ -232,7 +232,7 @@ assert(S.outer.length===nBefore+1&&Math.abs(S.outer[1][0]-2100)<1e-6&&S.outer[1]
 sel=null;lastPtrClick=null;
 const scr=w2s([1000,0]);
 const firePd=()=>(svg._listeners.pointerdown||[]).forEach(fn=>
-  fn({clientX:scr[0],clientY:scr[1],button:0,pointerId:1}));
+  fn({clientX:scr[0],clientY:scr[1],button:0,pointerId:1,preventDefault(){}}));
 const n2=S.outer.length;
 firePd();__flushRaf();
 assert(S.outer.length===n2,"single click on edge does not insert a vertex");
@@ -256,6 +256,10 @@ for (const [ok, msg] of [
    "info tooltip warns storage is temporary and points at Export JSON"],
   [!/\.greeting\{[^}]*position\s*:\s*sticky/.test(html),
    "greeting is static content, not sticky/floating"],
+  [html.includes("#svg,#svg text,#stageBar,#toolHint,#banner{user-select:none"),
+   "canvas workspace disables text selection during drags"],
+  [!/aside\{[^}]*user-select/.test(html) && !/body\{[^}]*user-select/.test(html),
+   "side panels keep selectable text (no global user-select ban)"],
 ]) {
   if (!ok) { console.error("FAIL:", msg); process.exitCode = 1; }
   else console.log("ok -", msg);
