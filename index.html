@@ -43,6 +43,17 @@ header .grp{display:flex;gap:6px;align-items:center}
   border-radius:50%;color:var(--muted);font-size:11px;font-style:italic;font-weight:700;
   line-height:13px;text-align:center;cursor:help;flex:0 0 auto}
 .infoIcon:hover{color:var(--ink);border-color:var(--ink)}
+#confirmOverlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+  background:rgba(10,9,7,.62);z-index:50}
+#confirmOverlay .cfCard{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:18px;width:min(420px,92vw);box-shadow:0 16px 44px rgba(0,0,0,.6)}
+#confirmOverlay h3{margin:0 0 8px;font-size:15px}
+#confirmOverlay p{color:var(--muted);margin:0 0 14px}
+#confirmHold{position:relative;overflow:hidden;border-color:#8c4433;color:#ffb4a3;
+  min-width:190px;user-select:none;-webkit-user-select:none;touch-action:none}
+#confirmHold .holdFill{position:absolute;left:0;top:0;bottom:0;width:0%;
+  background:rgba(224,82,82,.45);pointer-events:none}
+#confirmHold .holdLabel{position:relative;pointer-events:none}
 .ghLink{display:inline-flex;align-items:center;color:var(--muted);padding:4px;border-radius:6px}
 .ghLink:hover{color:var(--ink)}
 .ghLink svg{width:22px;height:22px;fill:currentColor;display:block}
@@ -207,6 +218,15 @@ table.stats tr[data-src]{cursor:pointer}
     <div id="cutList"></div>
   </aside>
 </main>
+<div id="confirmOverlay"><div class="cfCard">
+  <h3 id="confirmTitle"></h3>
+  <p id="confirmBody"></p>
+  <div class="row" style="justify-content:space-between">
+    <button id="confirmCancel">Cancel</button>
+    <button id="confirmHold" tabindex="-1"><span class="holdFill" id="confirmFill"></span><span class="holdLabel" id="confirmHoldLabel"></span></button>
+  </div>
+  <p class="hint" style="margin:8px 0 0">Press and <b>hold</b> the red button to confirm — a plain click won't do it. Esc cancels.</p>
+</div></div>
 <script>
 "use strict";
 /* ============================================================
@@ -1225,6 +1245,49 @@ function showBanner(msg){
   const b=$("banner");
   if(msg){b.innerHTML=esc(msg);b.style.display="block";}
   else b.style.display="none";}
+/* Destructive actions confirm by press-and-hold: a stray click,
+   an Enter keypress, or a reflexive double-click can't fire it —
+   the red button must be held until its fill completes. Cancel
+   (button, backdrop click, or Esc) is always the easy path. */
+let CONFIRM_HOLD_MS=900;
+let confirmPending=null,holdStart=0,holdRaf=0;
+function openConfirm(o){
+  confirmPending=o.onConfirm;
+  $("confirmTitle").textContent=o.title;
+  $("confirmBody").textContent=o.body;
+  $("confirmHoldLabel").textContent=o.confirmLabel;
+  $("confirmFill").style.width="0%";
+  $("confirmOverlay").style.display="flex";
+  const c=$("confirmCancel");if(c.focus)c.focus();}
+function closeConfirm(){
+  confirmPending=null;holdStart=0;
+  if(holdRaf&&typeof cancelAnimationFrame==="function")cancelAnimationFrame(holdRaf);
+  holdRaf=0;
+  $("confirmFill").style.width="0%";
+  $("confirmOverlay").style.display="none";}
+function bindConfirm(){
+  const hold=$("confirmHold"),fill=$("confirmFill");
+  $("confirmCancel").onclick=closeConfirm;
+  $("confirmOverlay").addEventListener("pointerdown",e=>{
+    if(e.target===$("confirmOverlay"))closeConfirm();});
+  hold.addEventListener("click",e=>e.preventDefault());
+  const stop=()=>{holdStart=0;
+    if(holdRaf&&typeof cancelAnimationFrame==="function")cancelAnimationFrame(holdRaf);
+    holdRaf=0;fill.style.width="0%";};
+  hold.addEventListener("pointerdown",e=>{
+    e.preventDefault();
+    if(hold.setPointerCapture)hold.setPointerCapture(e.pointerId);
+    holdStart=performance.now();
+    const tick=()=>{
+      if(!holdStart)return;
+      const t=(performance.now()-holdStart)/CONFIRM_HOLD_MS;
+      fill.style.width=Math.min(100,t*100)+"%";
+      if(t>=1){const cb=confirmPending;closeConfirm();if(cb)cb();return;}
+      holdRaf=requestAnimationFrame(tick);};
+    holdRaf=requestAnimationFrame(tick);});
+  hold.addEventListener("pointerup",stop);
+  hold.addEventListener("pointercancel",stop);
+  hold.addEventListener("lostpointercapture",stop);}
 svg.addEventListener("pointerdown",e=>{
   if(e.button===0)e.preventDefault(); // no native drag-selection from canvas drags
   svg.setPointerCapture(e.pointerId);
@@ -1298,6 +1361,7 @@ window.addEventListener("keydown",e=>{
   const tag=(e.target.tagName||"").toLowerCase();
   if(tag==="input"||tag==="select"||tag==="textarea")return;
   if(e.code==="Space"){ptr.space=true;e.preventDefault();}
+  if(e.key==="Escape"&&confirmPending){closeConfirm();return;}
   if(e.key==="Enter"&&(mode==="drawOuter"||mode==="drawHole"))closeDrawing();
   if(e.key==="Escape"){
     if(drawing.length){drawing=[];setMode("edit");renderSVG();}
@@ -1838,9 +1902,16 @@ function bindHeader(){
         save();syncAll();fitView();showBanner(null);}
       catch(err){showBanner("Import failed: "+err.message);}
       e.target.value="";});});
-  $("btnSample").onclick=sampleRoom;
-  $("btnClear").onclick=()=>{S.outer=[];S.holes=[];sel=null;
-    save();update();renderInspector(true);};
+  $("btnSample").onclick=()=>openConfirm({
+    title:"Replace the current room with the sample?",
+    body:"Your current outline and holes will be replaced by the sample L-shaped room with an island. Materials and fill settings stay. Export JSON first if you want to keep this design.",
+    confirmLabel:"Hold to load sample room",onConfirm:sampleRoom});
+  $("btnClear").onclick=()=>openConfirm({
+    title:"Clear the room?",
+    body:"The outline and all holes will be deleted so you can draw a new one. Materials and fill settings stay. Export JSON first if you want to keep this design.",
+    confirmLabel:"Hold to clear room",
+    onConfirm:()=>{S.outer=[];S.holes=[];sel=null;
+      save();update();renderInspector(true);}});
   $("btnLock").onclick=()=>{S.locked=!S.locked;if(S.locked)sel=null;
     save();syncHeader();renderInspector(true);toolHint();renderSVG();renderRoomInfo();};
   $("toolDraw").onclick=()=>setMode("drawOuter");
@@ -1869,6 +1940,7 @@ function syncAll(){
 load();
 bindHeader();syncHeader();
 bindCutGuideDrag();applyDock(cutGuideCorner);
+bindConfirm();
 renderMatEditor();renderFillEditor();renderInspector(true);
 fitView();toolHint();update(false);
 if(typeof module!=="undefined"&&module.exports)

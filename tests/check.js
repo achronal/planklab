@@ -241,6 +241,36 @@ assert(S.outer.length===n2+1,"double-click on edge inserts a vertex");
 assert(S.outer.some(p=>Math.abs(p[0]-1000)<2&&p[1]===0),
   "double-clicked vertex lies exactly on the edge");
 
+// --- destructive actions need a deliberate hold-to-confirm ---
+S.outer=[[0,0],[4200,0],[4200,3000],[0,3000]];S.holes=[];update();__flushRaf();
+document.getElementById("btnClear").click();
+assert(document.getElementById("confirmOverlay").style.display==="flex",
+  "Clear room asks for confirmation first");
+assert(S.outer.length===4,"room intact before confirming");
+const holdEl=document.getElementById("confirmHold");
+const fireHold=t=>(holdEl._listeners[t]||[]).forEach(fn=>
+  fn({pointerId:1,preventDefault(){}}));
+fireHold("pointerdown");fireHold("pointerup");__flushRaf();
+assert(S.outer.length===4,"a quick click on the hold button does not confirm");
+document.getElementById("confirmCancel").click();
+assert(S.outer.length===4&&
+  document.getElementById("confirmOverlay").style.display==="none",
+  "cancel closes the dialog and keeps the room");
+document.getElementById("btnSample").click();
+assert(document.getElementById("confirmTitle").textContent.includes("sample"),
+  "Sample room also asks first");
+document.getElementById("confirmCancel").click();
+CONFIRM_HOLD_MS=40;
+document.getElementById("btnClear").click();
+fireHold("pointerdown");
+for(let i=0;i<40&&S.outer.length;i++){__flushRaf();
+  await new Promise(r=>setTimeout(r,15));}
+assert(S.outer.length===0,"holding the button through the fill clears the room");
+assert(document.getElementById("confirmOverlay").style.display==="none",
+  "dialog closes after a confirmed hold");
+CONFIRM_HOLD_MS=900;
+S.outer=[[0,0],[4200,0],[4200,3000],[0,3000]];update();__flushRaf();
+
 if(failures){console.error(failures+" check(s) failed");process.exitCode=1;}
 else console.log("ALL CHECKS PASSED");
 })().catch(e=>{console.error("FAIL (exception):",e&&e.stack||e);process.exitCode=1;});
