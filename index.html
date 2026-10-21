@@ -1739,6 +1739,7 @@ async function optimizeOffsets(){
   overlay.style.display="flex";bar.style.width="0%";
   txt.textContent="Starting…";
   const btn=$("btnOptimize");if(btn)btn.disabled=true;
+  syncHistoryButtons(); // history is unavailable while a run is in flight
   try{
     const res=await searchOffsets(plankTotalAt,start,span,OPTIMIZER,
       async(attempts,best)=>{
@@ -1756,11 +1757,13 @@ async function optimizeOffsets(){
         res.attempts+" attempts. Fine-tune with the sliders if you like.";
       save("Optimize offsets");}
     overlay.style.display="none";optRunning=false;
+    syncHistoryButtons(); // the record during the run synced while disabled
     renderFillEditor();update();
     return{best:res.best,attempts:res.attempts,cancelled:res.cancelled||!res.best};
   }catch(e){
     S.fill.ox=start.x;S.fill.oy=start.y;
     overlay.style.display="none";optRunning=false;
+    syncHistoryButtons();
     showBanner("Optimizer failed: "+e.message);
     renderFillEditor();update();
     return{best:null,attempts:0,cancelled:true};}}

@@ -78,6 +78,15 @@ assert(res.attempts<=OPTIMIZER.MAX_ATTEMPTS,"optimizer respects attempt cap ("+r
 assert(totalOf()<before,"planks after optimize ("+totalOf()+") < bad start ("+before+")");
 assert(Math.abs(S.fill.ox-res.best.x)<1e-9&&Math.abs(S.fill.oy-res.best.y)<1e-9,
   "final offsets written back to state");
+assert(Hist.canUndo(),"optimizer run is recorded in history");
+assert(document.getElementById("btnUndo").disabled===false,
+  "undo button is re-enabled after the optimizer finishes");
+undoAction();__flushRaf();
+assert(S.fill.ox===startOx&&S.fill.oy===startOy,
+  "undo after optimize restores the pre-optimizer offsets");
+redoAction();__flushRaf();
+assert(Math.abs(S.fill.ox-res.best.x)<1e-9&&Math.abs(S.fill.oy-res.best.y)<1e-9,
+  "redo reapplies the optimized offsets");
 assert(document.getElementById("optOverlay").style.display==="none","overlay hidden after run");
 
 // --- cancel restores the original offsets ---
@@ -88,6 +97,8 @@ optCancelRequested=true;
 while(!done2){__flushRaf();await new Promise(r=>setImmediate(r));}
 const res2=await p2;__flushRaf();
 assert(res2.cancelled,"cancel reported");
+assert(document.getElementById("btnUndo").disabled===false,
+  "undo button is re-enabled after cancelling the optimizer too");
 assert(S.fill.ox===startOx&&S.fill.oy===startOy,"cancel restores original offsets");
 
 // --- alignment shortcuts + herringbone starting rotation ---
