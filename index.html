@@ -1044,6 +1044,14 @@ function assignLabelsAndStats(fill){
       byId[id].src=i;
       byId[id].label=ordered.length>1?num+suffix(k):String(num);});
     src.num=num;src.ids=ordered;});
+  // flag pieces whose source plank is mostly waste (<50% utilized)
+  for(const src of sources){
+    if(src.kind!=="cut")continue;
+    const pool=fill.poolByKey[src.pool];
+    const used=src.ids.reduce((s,id)=>s+byId[id].area,0);
+    src.utilization=used/pool.area;
+    if(src.utilization<UNDERUSED_MAX)
+      for(const id of src.ids)byId[id].underused=true;}
   return{sources,stats};}
 /* Effective planks to BUY. Left/right-handed stock is typically
    sold in pairs, so by default (fill.pairedLR) each L/R shape pair
@@ -1154,6 +1162,10 @@ function pathFrom(r){return r.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].to
    toward a cool steel blue, complementary to the warm wood tones,
    so cut pieces read as one family at a glance while the shade
    differences between shapes survive. */
+/* A source plank whose pieces use less than this fraction of it
+   is flagged under-utilized: all its pieces render bright purple
+   (UNDERUSED_FILL), taking priority over the red small-cut alert. */
+const UNDERUSED_MAX=0.5,UNDERUSED_FILL="#c026e0";
 function cutTintColor(hex){
   const t=[0x4a,0x90,0xc2];
   const c=[1,3,5].map(i=>parseInt(hex.substr(i,2),16));
@@ -1197,7 +1209,7 @@ function renderSVG(){
     const showLabels=$("showLabels").checked,showTint=$("showCutTint").checked;
     for(const p of R.pieces){
       const pool=R.poolByKey[p.pool];
-      const fill=p.small?"#d64545":
+      const fill=p.underused?UNDERUSED_FILL:p.small?"#d64545":
         (showTint&&p.isCut?cutTintColor(pool.color):pool.color);
       const hl=p.src===highlightSrc;
       L.add("pieces",'<path d="'+pathFrom(p.world)+'" fill="'+fill+'" fill-opacity="'+
@@ -1780,12 +1792,16 @@ function renderResults(){
         " → buy "+mx+" of each"+(spare?" ("+spare+" spare)":""));}
     if(parts.length)pairLine="<div class='sub'>Left/right sold in pairs: "+
       parts.join("; ")+". Untick “sold in pairs” in Fill settings to buy exact counts.</div>";}
+  const underusedSrcs=R.sources.filter(s=>s.utilization!=null&&s.utilization<UNDERUSED_MAX);
+  const underLine=underusedSrcs.length?
+    "<div class='sub' style='color:#e08af2'>"+underusedSrcs.length+
+    " source plank(s) under 50% utilized — shown purple. Nudging offset/rotation may pair their cuts better.</div>":"";
   let h="<div class='card'><div class='row'><span class='big'>"+totBuy+
     "</span><span class='sub'>planks to buy</span></div>"+
     "<div class='sub'>"+R.pieces.length+" pieces placed · "+totCut+" need cutting, from "+
     "<b>"+totCutSrc+"</b> source planks after reusing offcuts "+
     "(proven minimum "+totLB+(optimal?" — <span class='green'><b>optimal</b></span>":"")+")</div>"+
-    pairLine+
+    pairLine+underLine+
     (totSmall?"<div class='sub red'>"+totSmall+" piece(s) under the "+S.fill.threshold+
       "% small-cut alert — nudge offset/rotation to fix.</div>":"")+
     "<div class='sub'>Covered "+fmtArea(R.coverage)+" of "+fmtArea(R.area)+"</div></div>";
@@ -1822,7 +1838,9 @@ function renderCutList(){
     return "<div class='src' data-src='"+R.sources.indexOf(src)+"'"+
       (R.sources.indexOf(src)===highlightSrc?" style='background:#2c2822'":"")+">"+
       "<b>#"+src.num+"</b> <span class='swatch' style='background:"+pool.color+"'></span>"+
-      esc(pool.name)+" → "+desc+"</div>";}).join("");
+      esc(pool.name)+(src.utilization!=null?
+        " <span class='sub'"+(src.utilization<UNDERUSED_MAX?" style='color:#e08af2'":"")+
+        ">"+Math.round(src.utilization*100)+"% used</span>":"")+" → "+desc+"</div>";}).join("");
   el.querySelectorAll("[data-src]").forEach(d=>{
     d.onclick=()=>{const i=+d.dataset.src;
       highlightSrc=highlightSrc===i?-1:i;renderSVG();renderCutList();renderCutGuide();};});}

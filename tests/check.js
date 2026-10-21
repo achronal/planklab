@@ -145,7 +145,7 @@ assert(cutTintColor("#c99e6b")==="#7a95a1",
 const aCut=R.pieces.find(p=>p.isCut&&!p.small);
 const tintHex=cutTintColor(R.poolByKey[aCut.pool].color);
 const tinted=(svgHtml.match(new RegExp('fill="'+tintHex+'"',"g"))||[]).length;
-const expectedTint=R.pieces.filter(p=>p.isCut&&!p.small&&p.pool===aCut.pool).length;
+const expectedTint=R.pieces.filter(p=>p.isCut&&!p.small&&!p.underused&&p.pool===aCut.pool).length;
 assert(tinted===expectedTint&&expectedTint>0,
   "every cut piece of the shape uses the cut colour ("+tinted+"/"+expectedTint+")");
 assert(!svgHtml.includes("cutHatch")&&!svgHtml.includes("#ff7a45"),
@@ -344,6 +344,31 @@ assert(Hist.index===idxBefore&&Hist.entries.length===lenBefore&&S.fill.rot===20,
   "slider drag previews record no history entries");
 (sld._listeners.change||[]).forEach(fn=>fn());__flushRaf();
 assert(Hist.index===idxBefore+1,"slider release records exactly one history entry");
+
+// --- under-utilized source planks render purple, above red ---
+function tinyRoom(w){
+  S=defaultState();S.outer=[[0,0],[w,0],[w,190],[0,190]];
+  S.materials.linear={width:190,lengths:[{len:1900,cap:null}]};
+  S.fill.rule="brick";S.fill.oy=95; // align one full row with the room
+  update();__flushRaf();}
+tinyRoom(1000); // single cut piece uses ~53% of its plank: not flagged
+assert(R.pieces.length>0&&!R.pieces.some(p=>p.underused),
+  "53%-utilized source is not flagged under-utilized");
+assert(!document.getElementById("svg").innerHTML.includes(UNDERUSED_FILL),
+  "no purple when nothing is under-utilized");
+tinyRoom(800); // ~42% utilized: flagged, but piece is not "small"
+const up=R.pieces.find(p=>p.underused);
+assert(!!up&&!up.small,"42%-utilized source is flagged (piece itself not small)");
+assert(document.getElementById("svg").innerHTML.includes('fill="'+UNDERUSED_FILL+'"'),
+  "under-utilized pieces render bright purple");
+assert(document.getElementById("results").innerHTML.includes("under 50% utilized"),
+  "results call out under-utilized source planks");
+tinyRoom(300); // ~16%: under-utilized AND below the small-cut threshold
+const up2=R.pieces.find(p=>p.underused);
+assert(!!up2&&up2.small,"tiny-room piece is both small and under-utilized");
+const svg3=document.getElementById("svg").innerHTML;
+assert(svg3.includes('fill="'+UNDERUSED_FILL+'"')&&!svg3.includes('fill="#d64545"'),
+  "purple takes priority over the red small-cut colour");
 
 if(failures){console.error(failures+" check(s) failed");process.exitCode=1;}
 else console.log("ALL CHECKS PASSED");
