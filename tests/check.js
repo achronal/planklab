@@ -135,10 +135,21 @@ assert(svgHtml.includes("#2ee66b"),"selection highlight is bright green");
 assert(svgHtml.indexOf("#2ee66b")>svgHtml.indexOf("#e8c98f"),
   "highlight is drawn above pieces and room outline (top layer)");
 const cpos=n=>svgHtml.indexOf('data-layer="'+n+'"');
-assert(cpos("pieces")>=0&&cpos("pieces")<cpos("cutMarks")&&
-  cpos("cutMarks")<cpos("area")&&cpos("area")<cpos("highlight")&&
+assert(cpos("pieces")>=0&&cpos("pieces")<cpos("area")&&
+  cpos("area")<cpos("cutMarks")&&cpos("cutMarks")<cpos("highlight")&&
   cpos("highlight")<cpos("labels")&&cpos("labels")<cpos("handles"),
   "canvas layers render in declared z-order");
+// cut marks must not hide under the room outline they coincide with
+const marksOn=(svgHtml.match(/#ff7a45/g)||[]).length;
+assert(marksOn>0,"cut edge marks are generated ("+marksOn+")");
+assert(svgHtml.indexOf("#ff7a45")>svgHtml.indexOf("#e8c98f"),
+  "cut marks paint above the room outline");
+document.getElementById("showCutEdges").checked=false;renderSVG();
+assert(!document.getElementById("svg").innerHTML.includes("#ff7a45"),
+  "toggling Mark cut edges off removes the marks");
+document.getElementById("showCutEdges").checked=true;renderSVG();
+assert(document.getElementById("svg").innerHTML.includes("#ff7a45"),
+  "toggling Mark cut edges back on restores the marks");
 const guide=document.getElementById("cutGuide").innerHTML;
 assert(guide.includes("<svg")&&guide.includes("datum"),
   "cut guide shows the source plank diagram with datum");

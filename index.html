@@ -1170,7 +1170,7 @@ function cutEdgeFlags(piece,pool){
    then interactive handles. To change what covers what, reorder
    the list — nothing else decides layering. Layers render as
    <g data-layer="name"> so the stacking is inspectable in the DOM. */
-const CANVAS_LAYERS=["grid","pieces","cutMarks","area","highlight",
+const CANVAS_LAYERS=["grid","pieces","area","cutMarks","highlight",
                      "labels","preview","handles"];
 const GUIDE_LAYERS=["stock","pieces","cuts","dots","leaders","badges",
                     "pieceLabels","dims","notes"];
@@ -1213,7 +1213,7 @@ function renderSVG(){
         for(let i=0;i<p.world.length;i++)if(fl[i]){
           const a=p.world[i],b=p.world[(i+1)%p.world.length];
           L.add("cutMarks",'<line x1="'+a[0]+'" y1="'+a[1]+'" x2="'+b[0]+'" y2="'+b[1]+
-            '" stroke="#ff7a45" stroke-width="'+(2.2/k)+'" stroke-linecap="round"/>');}}}
+            '" stroke="#ff7a45" stroke-width="'+(3/k)+'" stroke-linecap="round"/>');}}}
     if(showLabels)for(const p of R.pieces){
       const fs=Math.min(12.5/k,Math.sqrt(p.area)*0.30);
       if(fs<3.2/k&&R.pieces.length>400)continue;
