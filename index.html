@@ -135,6 +135,10 @@ table.stats tr[data-src]{cursor:pointer}
     <button id="btnSample" title="Replace the room with a sample L-shape with an island">Sample room</button>
     <button id="btnClear" class="danger" title="Delete the room outline and start over">Clear room</button>
   </div>
+  <div class="grp">
+    <button id="btnUndo" title="Undo">↩ Undo</button>
+    <button id="btnRedo" title="Redo">↪ Redo</button>
+  </div>
   <div class="sp"></div>
   <div class="grp"><span class="sub">Units</span>
     <div class="seg"><button id="uMm">mm</button><button id="uIn">inches</button></div>
@@ -286,7 +290,12 @@ function fmtRoomLen(mm){
 
 /* ---------------- DATA: persistence ---------------- */
 let saveTimer=null;
-function save(){
+/* save(label) is the commit point for a user action: it records a
+   history snapshot (deduped, so repeats/no-ops are free) and
+   schedules the autosave. Live previews during drags use
+   update(false) and never reach here, so one drag = one entry. */
+function save(label){
+  recordHistory(label||"Edit");
   const el=$("saveState"); if(el)el.textContent="saving…";
   clearTimeout(saveTimer);
   saveTimer=setTimeout(()=>{
@@ -312,6 +321,82 @@ function load(){
   }catch(e){/* corrupted storage: start fresh */}
   return false;
 }
+/* ---------------- DATA: action history (undo/redo) ----------------
+   Snapshot-based history over the project state S. Each entry is
+   the JSON of S AFTER an action (plus a baseline at load); undo and
+   redo just move a pointer and restore. Measured snapshot sizes:
+   ~0.5 KB typical, ~1.8 KB for a 108-vertex room — so the generous
+   limits below cost roughly 0.5–2 MB in practice, hard-capped by
+   bytes for pathological geometry. View state (units, room lock)
+   is excluded from snapshots: undo never flips your units or lock.
+   Persistence is isolated in init()/persist() so the storage
+   backend can be swapped without touching any call site, and all
+   UI interaction goes through the onChange/onRestore hooks. */
+const HISTORY_KEY="planklab.history.v1";
+const HISTORY_LIMITS={MAX_ENTRIES:1000,MAX_BYTES:4000000};
+const Hist={
+  entries:[],index:-1,restoring:false,
+  onChange:null,onRestore:null,
+  snapshot(state){const c=JSON.parse(JSON.stringify(state));
+    delete c.units;delete c.locked;return JSON.stringify(c);},
+  canUndo(){return this.index>0;},
+  canRedo(){return this.index<this.entries.length-1;},
+  undoLabel(){return this.canUndo()?this.entries[this.index].label:null;},
+  redoLabel(){return this.canRedo()?this.entries[this.index+1].label:null;},
+  record(label){
+    if(this.restoring)return;
+    const json=this.snapshot(S);
+    const cur=this.entries[this.index];
+    if(cur&&cur.json===json)return; // no-op or duplicate commit
+    this.entries.length=this.index+1; // new action drops the redo tail
+    this.entries.push({label:label||"Edit",json});
+    this.index++;
+    this.trim();this.persist();this.changed();},
+  undo(){if(!this.canUndo())return;this.index--;this.apply();},
+  redo(){if(!this.canRedo())return;this.index++;this.apply();},
+  apply(){
+    const e=this.entries[this.index];if(!e)return;
+    let obj;try{obj=JSON.parse(e.json);}catch(err){return;}
+    this.persist();this.changed();
+    if(this.onRestore)this.onRestore(obj);},
+  changed(){if(this.onChange)this.onChange();},
+  bytes(){return this.entries.reduce((s,e)=>s+e.json.length+e.label.length+16,0);},
+  trim(){
+    while(this.entries.length>HISTORY_LIMITS.MAX_ENTRIES||
+          this.bytes()>HISTORY_LIMITS.MAX_BYTES){
+      if(this.index>0){this.entries.shift();this.index--;}
+      else if(this.entries.length>1)this.entries.pop();
+      else break;}},
+  persist(){
+    const payload=()=>JSON.stringify({v:1,index:this.index,entries:this.entries});
+    try{localStorage.setItem(HISTORY_KEY,payload());}
+    catch(e){ // over quota: shed the oldest half once and retry
+      try{
+        const drop=Math.floor(this.entries.length/2);
+        if(drop>0&&this.index>=drop){
+          this.entries.splice(0,drop);this.index-=drop;
+          localStorage.setItem(HISTORY_KEY,payload());}
+      }catch(e2){/* keep history for this session only */}}},
+  init(){
+    let ok=false;
+    try{const raw=localStorage.getItem(HISTORY_KEY);
+      if(raw){const d=JSON.parse(raw);
+        if(d&&Array.isArray(d.entries)){
+          this.entries=d.entries.filter(e=>e&&typeof e.json==="string")
+            .map(e=>({label:e.label||"Edit",json:e.json}));
+          this.index=clamp(d.index|0,0,Math.max(this.entries.length-1,0));
+          ok=this.entries.length>0;}}}catch(e){}
+    const cur=this.snapshot(S);
+    if(!ok){this.entries=[{label:"Open project",json:cur}];this.index=0;}
+    else if(this.entries[this.index].json!==cur){
+      // project autosave and history drifted apart (e.g. crash
+      // between writes): keep the past, adopt current state on top
+      this.entries.length=this.index+1;
+      this.entries.push({label:"Recovered session",json:cur});
+      this.index++;this.trim();}
+    this.persist();this.changed();}
+};
+function recordHistory(label){Hist.record(label);}
 function exportJSON(){
   const blob=new Blob([JSON.stringify(S,null,2)],{type:"application/json"});
   const a=document.createElement("a");
@@ -1229,7 +1314,7 @@ function insertVertexAt(he,w){
   const p=[a[0]+ab[0]*t,a[1]+ab[1]*t]; // exactly on the edge
   r.splice(he.idx+1,0,[Math.round(p[0]*10)/10,Math.round(p[1]*10)/10]);
   sel={type:"vertex",ring:he.ring,idx:he.idx+1};
-  save();update();renderInspector();}
+  save("Add vertex");update();renderInspector();}
 let lastPtrClick=null;
 function hitPiece(w){
   if(!R||R.errors.length)return null;
@@ -1240,6 +1325,7 @@ function closeDrawing(){
   if(drawing.length<3){showBanner("An area needs at least 3 vertices — keep clicking, or Esc to cancel.");return;}
   const ring=drawing.map(p=>[p[0],p[1]]);
   if(mode==="drawOuter")S.outer=ring;else S.holes.push(ring);
+  save(mode==="drawOuter"?"Draw room outline":"Draw hole");
   drawing=[];setMode("edit");sel=null;update();}
 function showBanner(msg){
   const b=$("banner");
@@ -1336,7 +1422,7 @@ svg.addEventListener("pointermove",e=>{
 svg.addEventListener("pointerup",e=>{
   const wasDragV=ptr.dragV,wasPan=ptr.panning;
   ptr.down=false;ptr.dragV=null;ptr.panning=false;snapGuide=null;
-  if(wasDragV){save();update();}
+  if(wasDragV){save("Move vertex");update();}
   else if(wasPan&&ptr.moved<5&&(mode==="edit"||S.locked)){
     const p=hitPiece(s2w(e.clientX,e.clientY));
     highlightSrc=p?p.src:-1;
@@ -1362,13 +1448,17 @@ window.addEventListener("keydown",e=>{
   if(tag==="input"||tag==="select"||tag==="textarea")return;
   if(e.code==="Space"){ptr.space=true;e.preventDefault();}
   if(e.key==="Escape"&&confirmPending){closeConfirm();return;}
+  if((e.ctrlKey||e.metaKey)&&!e.altKey){
+    const kk=e.key.toLowerCase();
+    if(kk==="z"&&!e.shiftKey){e.preventDefault();undoAction();return;}
+    if((kk==="z"&&e.shiftKey)||kk==="y"){e.preventDefault();redoAction();return;}}
   if(e.key==="Enter"&&(mode==="drawOuter"||mode==="drawHole"))closeDrawing();
   if(e.key==="Escape"){
     if(drawing.length){drawing=[];setMode("edit");renderSVG();}
     else{sel=null;highlightSrc=-1;renderInspector();renderSVG();renderCutList();renderCutGuide();}}
   if((e.key==="Delete"||e.key==="Backspace")&&sel&&sel.type==="vertex"&&!S.locked){
     const r=ringOf(sel.ring);
-    if(r.length>3){r.splice(sel.idx,1);sel=null;save();update();renderInspector();}
+    if(r.length>3){r.splice(sel.idx,1);sel=null;save("Delete vertex");update();renderInspector();}
     else showBanner("A closed area needs at least 3 vertices. Use “Delete hole” / “Clear room” to remove it entirely.");}});
 window.addEventListener("keyup",e=>{if(e.code==="Space")ptr.space=false;});
 window.addEventListener("resize",()=>renderSVG());
@@ -1447,14 +1537,14 @@ function renderInspector(force){
       "<div class='row'><button id='delV' class='danger'>Delete vertex</button>"+
       (sel.ring>=0?"<button id='delHole' class='danger'>Delete this hole</button>":"")+"</div></div>";
     const apply=()=>{const x=parseLen($("vx").value),y=parseLen($("vy").value);
-      if(x!=null)r[i][0]=x;if(y!=null)r[i][1]=y;save();update();renderInspector(true);};
+      if(x!=null)r[i][0]=x;if(y!=null)r[i][1]=y;save("Edit vertex position");update();renderInspector(true);};
     $("vx").addEventListener("change",apply);$("vy").addEventListener("change",apply);
-    const al=(fn)=>()=>{fn();save();update();renderInspector(true);};
+    const al=(fn)=>()=>{fn();save("Align vertex");update();renderInspector(true);};
     $("alYP").onclick=al(()=>r[i][1]=prev[1]);$("alYN").onclick=al(()=>r[i][1]=next[1]);
     $("alXP").onclick=al(()=>r[i][0]=prev[0]);$("alXN").onclick=al(()=>r[i][0]=next[0]);
-    $("delV").onclick=()=>{if(r.length>3){r.splice(i,1);sel=null;save();update();renderInspector(true);}
+    $("delV").onclick=()=>{if(r.length>3){r.splice(i,1);sel=null;save("Delete vertex");update();renderInspector(true);}
       else showBanner("A closed area needs at least 3 vertices.");};
-    if(sel.ring>=0)$("delHole").onclick=()=>{S.holes.splice(sel.ring,1);sel=null;save();update();renderInspector(true);};
+    if(sel.ring>=0)$("delHole").onclick=()=>{S.holes.splice(sel.ring,1);sel=null;save("Delete hole");update();renderInspector(true);};
   }else{
     const i=sel.idx,a=r[i],b=r[(i+1)%r.length],L=vlen(sub(b,a));
     el.innerHTML="<div class='card'><h3>"+where+" · edge V"+(i+1)+" → V"+((i+1)%r.length+1)+"</h3>"+
@@ -1475,16 +1565,16 @@ function renderInspector(force){
       const u=[d[0]/len,d[1]/len];
       if($("elAnchor").value==="a"){B[0]=A[0]+u[0]*nl;B[1]=A[1]+u[1]*nl;}
       else{A[0]=B[0]-u[0]*nl;A[1]=B[1]-u[1]*nl;}
-      save();update();renderInspector(true);};
-    $("eH").onclick=()=>{r[(sel.idx+1)%r.length][1]=r[sel.idx][1];save();update();renderInspector(true);};
-    $("eV").onclick=()=>{r[(sel.idx+1)%r.length][0]=r[sel.idx][0];save();update();renderInspector(true);};
+      save("Set edge length");update();renderInspector(true);};
+    $("eH").onclick=()=>{r[(sel.idx+1)%r.length][1]=r[sel.idx][1];save("Make edge horizontal");update();renderInspector(true);};
+    $("eV").onclick=()=>{r[(sel.idx+1)%r.length][0]=r[sel.idx][0];save("Make edge vertical");update();renderInspector(true);};
     $("addMidVt").onclick=()=>{const A=r[sel.idx],B=r[(sel.idx+1)%r.length];
       insertVertexAt({ring:sel.ring,idx:sel.idx},[(A[0]+B[0])/2,(A[1]+B[1])/2]);};}}
 function sampleRoom(){
   S.outer=[[0,0],[4600,0],[4600,3200],[2400,3200],[2400,1700],[0,1700]];
   S.holes=[[[2900,1000],[3700,1000],[3700,1500],[2900,1500]]];
   S.locked=false;sel=null;highlightSrc=-1;
-  save();fitView();update();renderInspector(true);syncHeader();}
+  save("Load sample room");fitView();update();renderInspector(true);syncHeader();}
 
 /* ---------------- UI: right panel ---------------- */
 function lenRow(label,id,mm){
@@ -1493,7 +1583,7 @@ function lenRow(label,id,mm){
 function bindLen(id,get,set){
   $(id).addEventListener("change",()=>{
     const v=parseLen($(id).value);if(v!=null&&v>0)set(v);
-    save();renderMatEditor();renderFillEditor();update();});}
+    save("Edit material size");renderMatEditor();renderFillEditor();update();});}
 function renderMatEditor(){
   const el=$("matEditor"),p=S.pattern,mat=S.materials[p];
   if(p==="linear"){
@@ -1516,10 +1606,10 @@ function renderMatEditor(){
       $("mCap"+i).addEventListener("change",()=>{
         const t=$("mCap"+i).value.trim();
         e.cap=t===""?null:Math.max(0,parseInt(t,10)||0);
-        save();renderMatEditor();update();});
-      $("mDel"+i).onclick=()=>{mat.lengths.splice(i,1);save();renderMatEditor();update();};});
+        save("Edit stock limit");renderMatEditor();update();});
+      $("mDel"+i).onclick=()=>{mat.lengths.splice(i,1);save("Remove plank length");renderMatEditor();update();};});
     const add=$("mAdd");if(add)add.onclick=()=>{mat.lengths.push({len:900,cap:null});
-      save();renderMatEditor();update();};
+      save("Add plank length");renderMatEditor();update();};
   }else if(p==="herringbone"||p==="doubleHerringbone"){
     el.innerHTML=lenRow("Plank length","mLen",mat.len)+lenRow("Plank width","mWid",mat.width)+
       "<p class='hint'>Aspect ratio <b>"+(mat.len/mat.width).toFixed(2)+"×</b> (minimum 2×). "+
@@ -1538,11 +1628,11 @@ function renderMatEditor(){
       "The long edge works out to "+fmtLen(Math.max(g.m,0))+". Left/right pieces are mirrored stock and counted separately.</p>";
     el.querySelectorAll("[data-ang]").forEach(b=>{
       b.classList.toggle("on",Math.abs(mat.angle-+b.dataset.ang)<0.01);
-      b.onclick=()=>{mat.angle=+b.dataset.ang;save();renderMatEditor();update();};});
+      b.onclick=()=>{mat.angle=+b.dataset.ang;save("Edit chevron angle");renderMatEditor();update();};});
     $("mAng").addEventListener("change",()=>{
       const v=parseFloat($("mAng").value);
       if(isFinite(v)&&v>=15&&v<=75)mat.angle=v;
-      save();renderMatEditor();update();});
+      save("Edit chevron angle");renderMatEditor();update();});
     bindLen("mWid",()=>mat.width,v=>mat.width=v);
     bindLen("mTip",()=>mat.tip,v=>mat.tip=v);}}
 function chevDiagramSVG(mat){
@@ -1599,29 +1689,30 @@ function renderFillEditor(){
      "<div class='row'><label>Saw kerf</label>"+numInput("fKerf",fmtNum(f.kerf))+
      "<span class='unit'>"+unitName()+"</span><span class='sub'>sacrificial width per cut (default 3 mm)</span></div>";
   el.innerHTML=h;
-  const pair=(sid,nid,toS,fromN)=>{
+  const pair=(sid,nid,toS,fromN,label)=>{
     $(sid).addEventListener("input",()=>{toS(parseFloat($(sid).value));
-      $(nid).value=fromN();update();});
+      $(nid).value=fromN();update(false);}); // live preview only
+    $(sid).addEventListener("change",()=>{save(label);update(false);});
     $(nid).addEventListener("change",()=>{const v=parseFloat($(nid).value);
-      if(isFinite(v))toS(v,true);renderFillEditor();update();});};
-  pair("fOxS","fOx",(v,n)=>{f.ox=n?(parseLen(v)??f.ox):v;},()=>fmtNum(f.ox));
-  pair("fOyS","fOy",(v,n)=>{f.oy=n?(parseLen(v)??f.oy):v;},()=>fmtNum(f.oy));
-  pair("fRotS","fRot",v=>f.rot=v,()=>f.rot);
-  pair("fThrS","fThr",v=>f.threshold=clamp(v,0,99),()=>f.threshold);
+      if(isFinite(v))toS(v,true);save(label);renderFillEditor();update(false);});};
+  pair("fOxS","fOx",(v,n)=>{f.ox=n?(parseLen(v)??f.ox):v;},()=>fmtNum(f.ox),"Change offset X");
+  pair("fOyS","fOy",(v,n)=>{f.oy=n?(parseLen(v)??f.oy):v;},()=>fmtNum(f.oy),"Change offset Y");
+  pair("fRotS","fRot",v=>f.rot=v,()=>f.rot,"Change rotation");
+  pair("fThrS","fThr",v=>f.threshold=clamp(v,0,99),()=>f.threshold,"Change small-cut alert");
   if(S.pattern==="linear"){
     $("fRule").value=f.rule;$("fDist").value=f.distribution;
-    $("fRule").addEventListener("change",()=>{f.rule=$("fRule").value;save();update();});
-    $("fDist").addEventListener("change",()=>{f.distribution=$("fDist").value;save();update();});
+    $("fRule").addEventListener("change",()=>{f.rule=$("fRule").value;save("Change layout rule");update();});
+    $("fDist").addEventListener("change",()=>{f.distribution=$("fDist").value;save("Change length mix");update();});
     $("fSeed").addEventListener("change",()=>{
-      const v=parseInt($("fSeed").value,10);if(isFinite(v))f.seed=v;save();update();});
+      const v=parseInt($("fSeed").value,10);if(isFinite(v))f.seed=v;save("Change random seed");update();});
     $("fReroll").onclick=()=>{f.seed=Math.floor(Math.random()*1e9);
-      save();renderFillEditor();update();};}
+      save("Re-roll random layout");renderFillEditor();update();};}
   const fp=$("fPaired");
-  if(fp)fp.addEventListener("change",()=>{f.pairedLR=fp.checked;save();update();});
+  if(fp)fp.addEventListener("change",()=>{f.pairedLR=fp.checked;save("Toggle paired buying");update();});
   $("fKerf").addEventListener("change",()=>{
-    const v=parseLen($("fKerf").value);if(v!=null&&v>=0)f.kerf=v;save();update();});
+    const v=parseLen($("fKerf").value);if(v!=null&&v>=0)f.kerf=v;save("Change saw kerf");update();});
   $("btnOptimize").onclick=()=>optimizeOffsets();
-  const setRot=v=>{f.rot=v;save();renderFillEditor();update();};
+  const setRot=v=>{f.rot=v;save("Align pattern");renderFillEditor();update();};
   $("alH").onclick=()=>setRot(ALIGN[S.pattern].h);
   $("alV").onclick=()=>setRot(ALIGN[S.pattern].v);}
 function plankTotalAt(ox,oy){
@@ -1662,7 +1753,8 @@ async function optimizeOffsets(){
     else{
       S.fill.ox=res.best.x;S.fill.oy=res.best.y;
       optMsg="Optimizer: "+startTot+" → "+res.best.tot+" planks in "+
-        res.attempts+" attempts. Fine-tune with the sliders if you like.";}
+        res.attempts+" attempts. Fine-tune with the sliders if you like.";
+      save("Optimize offsets");}
     overlay.style.display="none";optRunning=false;
     renderFillEditor();update();
     return{best:res.best,attempts:res.attempts,cancelled:res.cancelled||!res.best};
@@ -1899,7 +1991,7 @@ function bindHeader(){
     const f=e.target.files[0];if(!f)return;
     f.text().then(txt=>{
       try{S=sanitizeState(JSON.parse(txt));sel=null;highlightSrc=-1;
-        save();syncAll();fitView();showBanner(null);}
+        save("Import project");syncAll();fitView();showBanner(null);}
       catch(err){showBanner("Import failed: "+err.message);}
       e.target.value="";});});
   $("btnSample").onclick=()=>openConfirm({
@@ -1911,13 +2003,15 @@ function bindHeader(){
     body:"The outline and all holes will be deleted so you can draw a new one. Materials and fill settings stay. Export JSON first if you want to keep this design.",
     confirmLabel:"Hold to clear room",
     onConfirm:()=>{S.outer=[];S.holes=[];sel=null;
-      save();update();renderInspector(true);}});
+      save("Clear room");update();renderInspector(true);}});
   $("btnLock").onclick=()=>{S.locked=!S.locked;if(S.locked)sel=null;
     save();syncHeader();renderInspector(true);toolHint();renderSVG();renderRoomInfo();};
   $("toolDraw").onclick=()=>setMode("drawOuter");
   $("toolHole").onclick=()=>setMode("drawHole");
   $("toolEdit").onclick=()=>setMode("edit");
   $("toolPan").onclick=()=>setMode("pan");
+  $("btnUndo").onclick=undoAction;
+  $("btnRedo").onclick=redoAction;
   $("btnFit").onclick=fitView;
   $("zoomIn").onclick=()=>{cam.k=clamp(cam.k*1.25,0.005,4);renderSVG();};
   $("zoomOut").onclick=()=>{cam.k=clamp(cam.k/1.25,0.005,4);renderSVG();};
@@ -1929,16 +2023,36 @@ function bindHeader(){
     // Herringbone reads along the room at -45°; start there.
     if(S.pattern==="herringbone"||S.pattern==="doubleHerringbone")
       S.fill.rot=ALIGN[S.pattern].h;
-    save();
+    save("Change pattern");
     renderMatEditor();renderFillEditor();update();});
   window.addEventListener("beforeunload",()=>{
     try{localStorage.setItem(LS_KEY,JSON.stringify(S));}catch(e){}});}
+function restoreFromHistory(obj){
+  Hist.restoring=true;
+  const keep={units:S.units,locked:S.locked};
+  try{S=sanitizeState(Object.assign(obj,keep));}
+  catch(e){Hist.restoring=false;showBanner("Could not restore that history step.");return;}
+  sel=null;highlightSrc=-1;drawing=[];
+  if(mode==="drawOuter"||mode==="drawHole")setMode("edit");
+  save();syncAll();toolHint();
+  Hist.restoring=false;}
+function syncHistoryButtons(){
+  const u=$("btnUndo"),r=$("btnRedo");if(!u||!r)return;
+  u.disabled=!Hist.canUndo()||optRunning;
+  r.disabled=!Hist.canRedo()||optRunning;
+  u.title=Hist.canUndo()?"Undo: "+Hist.undoLabel()+" (Ctrl+Z)":"Nothing to undo";
+  r.title=Hist.canRedo()?"Redo: "+Hist.redoLabel()+" (Ctrl+Shift+Z)":"Nothing to redo";}
+function undoAction(){if(!optRunning)Hist.undo();}
+function redoAction(){if(!optRunning)Hist.redo();}
 function syncAll(){
   syncHeader();renderMatEditor();renderFillEditor();
   renderInspector(true);update();}
 /* ---------------- init ---------------- */
 load();
-bindHeader();syncHeader();
+Hist.onRestore=restoreFromHistory;
+Hist.onChange=syncHistoryButtons;
+Hist.init();
+bindHeader();syncHeader();syncHistoryButtons();
 bindCutGuideDrag();applyDock(cutGuideCorner);
 bindConfirm();
 renderMatEditor();renderFillEditor();renderInspector(true);

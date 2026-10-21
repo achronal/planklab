@@ -5,8 +5,9 @@ A single self-contained browser app for planning flooring layouts.
 **Live app: <https://achronal.github.io/planklab/>** — or open
 `index.html` in any modern browser (double-click it — no server, no
 build step, no network needed). Work autosaves to the browser's
-local storage; use Export/Import JSON in the header to move a project
-between machines.
+local storage, with undo/redo history (Ctrl+Z / Ctrl+Shift+Z, up to
+1000 steps) persisted alongside it; use Export/Import JSON in the
+header to move a project between machines.
 
 Found a bug or have an idea? Please
 [open an issue](https://github.com/achronal/planklab/issues).

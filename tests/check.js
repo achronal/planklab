@@ -271,6 +271,52 @@ assert(document.getElementById("confirmOverlay").style.display==="none",
 CONFIRM_HOLD_MS=900;
 S.outer=[[0,0],[4200,0],[4200,3000],[0,3000]];update();__flushRaf();
 
+// --- undo/redo history (persisted) ---
+S=defaultState();
+Hist.entries=[{label:"Open project",json:Hist.snapshot(S)}];
+Hist.index=0;Hist.persist();syncHistoryButtons();syncAll();__flushRaf();
+assert(!Hist.canUndo()&&!Hist.canRedo(),"fresh history has nothing to undo or redo");
+S.fill.rot=33;save("Change rotation");update();__flushRaf();
+assert(Hist.canUndo()&&Hist.undoLabel()==="Change rotation",
+  "action recorded with its label");
+S.outer[1][0]=4300;save("Move vertex");update();__flushRaf();
+undoAction();__flushRaf();
+assert(S.outer[1][0]===4200&&S.fill.rot===33,"undo reverts only the last action");
+undoAction();__flushRaf();
+assert(S.fill.rot===0,"second undo reverts the rotation");
+redoAction();__flushRaf();
+assert(S.fill.rot===33,"redo reapplies the rotation");
+S.fill.rot=10;save("Change rotation");update();__flushRaf();
+assert(!Hist.canRedo(),"a new action after undo drops the redo tail");
+__handlers.keydown({key:"z",ctrlKey:true,shiftKey:false,altKey:false,
+  metaKey:false,code:"KeyZ",target:{tagName:"BODY"},preventDefault(){}});
+__flushRaf();
+assert(S.fill.rot===33,"Ctrl+Z undoes");
+const nHist=Hist.entries.length;save("Edit");
+assert(Hist.entries.length===nHist,"no-op save adds no history entry");
+S.units="in";S.locked=true;
+undoAction();__flushRaf();
+assert(S.units==="in"&&S.locked===true,
+  "undo keeps current units and lock (view state excluded)");
+S.units="mm";S.locked=false;syncHeader();
+const savedIdx=Hist.index,savedLen=Hist.entries.length;
+Hist.entries=[];Hist.index=-1;Hist.init();
+assert(Hist.entries.length===savedLen&&Hist.index===savedIdx,
+  "history reloads from browser storage after a fresh start");
+assert(HISTORY_LIMITS.MAX_ENTRIES>=500&&HISTORY_LIMITS.MAX_BYTES>=1000000,
+  "history limits are generous ("+HISTORY_LIMITS.MAX_ENTRIES+" entries / "+
+  HISTORY_LIMITS.MAX_BYTES+" bytes)");
+// slider drags coalesce: many input ticks, one entry on release
+const idxBefore=Hist.index,lenBefore=Hist.entries.length;
+const sld=document.getElementById("fRotS");
+for(const v of[5,9,14,20]){sld.value=String(v);
+  (sld._listeners.input||[]).forEach(fn=>fn());}
+__flushRaf();
+assert(Hist.index===idxBefore&&Hist.entries.length===lenBefore&&S.fill.rot===20,
+  "slider drag previews record no history entries");
+(sld._listeners.change||[]).forEach(fn=>fn());__flushRaf();
+assert(Hist.index===idxBefore+1,"slider release records exactly one history entry");
+
 if(failures){console.error(failures+" check(s) failed");process.exitCode=1;}
 else console.log("ALL CHECKS PASSED");
 })().catch(e=>{console.error("FAIL (exception):",e&&e.stack||e);process.exitCode=1;});
