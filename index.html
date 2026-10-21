@@ -176,7 +176,7 @@ table.stats tr[data-src]{cursor:pointer}
     <div id="inspector"><p class="hint">Select a vertex or an edge on the canvas.</p></div>
     <h2>View</h2>
     <div class="row"><label><input type="checkbox" id="showLabels" checked> Piece numbers</label></div>
-    <div class="row"><label><input type="checkbox" id="showCutEdges" checked> Mark cut edges</label></div>
+    <div class="row"><label><input type="checkbox" id="showCutTint" checked> Hatch pieces that need cutting</label></div>
     <div class="row"><label><input type="checkbox" id="showGrid" checked> Grid</label>
       <button id="btnFit">Fit view</button></div>
     <p class="hint">Mouse wheel zooms. Drag empty space to pan in Pan mode,
@@ -1150,18 +1150,6 @@ function s2w(px,py){const[w,h]=stageSize();const r=stage.getBoundingClientRect()
   return[cam.cx+(px-r.left-w/2)/cam.k,cam.cy+(py-r.top-h/2)/cam.k];}
 function ringOf(ref){return ref===-1?S.outer:S.holes[ref];}
 function pathFrom(r){return r.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ")+" Z";}
-function cutEdgeFlags(piece,pool){
-  if(piece._cef)return piece._cef;
-  const flags=[];
-  for(let i=0;i<piece.local.length;i++){
-    const P=piece.local[i],Q=piece.local[(i+1)%piece.local.length];
-    let onStock=false;
-    for(let s=0;s<pool.local.length;s++){
-      const A=pool.local[s],B=pool.local[(s+1)%pool.local.length],e=sub(B,A);
-      if(Math.abs(cross(e,sub(P,A)))<1e-4*vlen(e)&&
-         Math.abs(cross(e,sub(Q,A)))<1e-4*vlen(e)){onStock=true;break;}}
-    flags.push(!onStock);}
-  piece._cef=flags;return flags;}
 /* ---- SVG layer stacks ----
    Every renderer paints into NAMED layers instead of relying on
    incidental append order. Each ORDER list below IS the z-order
@@ -1170,7 +1158,7 @@ function cutEdgeFlags(piece,pool){
    then interactive handles. To change what covers what, reorder
    the list — nothing else decides layering. Layers render as
    <g data-layer="name"> so the stacking is inspectable in the DOM. */
-const CANVAS_LAYERS=["grid","pieces","area","cutMarks","highlight",
+const CANVAS_LAYERS=["grid","pieces","cutTint","area","highlight",
                      "labels","preview","handles"];
 const GUIDE_LAYERS=["stock","pieces","cuts","dots","leaders","badges",
                     "pieceLabels","dims","notes"];
@@ -1197,7 +1185,7 @@ function renderSVG(){
       t+='<text x="'+(x+3/k)+'" y="'+(y0+13/k)+'">'+esc(fmtNum(x))+"</text>";
     t+="</g>";L.add("grid",t);}
   if(R&&!R.errors.length){
-    const showLabels=$("showLabels").checked,showCut=$("showCutEdges").checked;
+    const showLabels=$("showLabels").checked,showTint=$("showCutTint").checked;
     for(const p of R.pieces){
       const pool=R.poolByKey[p.pool];
       const fill=p.small?"#d64545":pool.color;
@@ -1208,12 +1196,9 @@ function renderSVG(){
       if(hl)L.add("highlight",'<path d="'+pathFrom(p.world)+
         '" fill="none" stroke="#2ee66b" stroke-width="'+(3.4/k)+
         '" stroke-linejoin="round" pointer-events="none"/>');
-      if(showCut&&p.isCut){
-        const fl=cutEdgeFlags(p,R.poolByKey[p.pool]);
-        for(let i=0;i<p.world.length;i++)if(fl[i]){
-          const a=p.world[i],b=p.world[(i+1)%p.world.length];
-          L.add("cutMarks",'<line x1="'+a[0]+'" y1="'+a[1]+'" x2="'+b[0]+'" y2="'+b[1]+
-            '" stroke="#ff7a45" stroke-width="'+(3/k)+'" stroke-linecap="round"/>');}}}
+      if(showTint&&p.isCut)
+        L.add("cutTint",'<path d="'+pathFrom(p.world)+
+          '" fill="url(#cutHatch)" stroke="none" pointer-events="none"/>');}
     if(showLabels)for(const p of R.pieces){
       const fs=Math.min(12.5/k,Math.sqrt(p.area)*0.30);
       if(fs<3.2/k&&R.pieces.length>400)continue;
@@ -1238,8 +1223,12 @@ function renderSVG(){
     if(snapGuide.y!=null)L.add("preview",'<line x1="'+x0+'" y1="'+snapGuide.y+'" x2="'+x1+
       '" y2="'+snapGuide.y+'" stroke="#7fb069" stroke-width="'+(1.2/k)+'" stroke-dasharray="'+(5/k)+" "+(4/k)+'"/>');}
   L.add("handles",renderHandles(x0,y0,x1,y1));
+  const defs='<defs><pattern id="cutHatch" width="90" height="90" '+
+    'patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'+
+    '<line x1="0" y1="0" x2="0" y2="90" stroke="rgba(23,19,16,0.42)" stroke-width="14"/>'+
+    '</pattern></defs>';
   svg.innerHTML='<g transform="translate('+(w/2)+" "+(h/2)+") scale("+k+
-    ") translate("+(-cam.cx)+" "+(-cam.cy)+')">'+L.render()+"</g>";
+    ") translate("+(-cam.cx)+" "+(-cam.cy)+')">'+defs+L.render()+"</g>";
   $("zoomInfo").textContent="zoom "+(k*1000).toFixed(0)+" px/"+(S.units==="in"?"ft":"m")+
     " · grid "+fmtLen(gridStep());
   function gridStep(){let step=100;for(const c of[100,200,500,1000,2000])if(c*k>=46){step=c;break;}return step;}}
@@ -2018,7 +2007,7 @@ function bindHeader(){
   $("btnFit").onclick=fitView;
   $("zoomIn").onclick=()=>{cam.k=clamp(cam.k*1.25,0.005,4);renderSVG();};
   $("zoomOut").onclick=()=>{cam.k=clamp(cam.k/1.25,0.005,4);renderSVG();};
-  for(const id of["showLabels","showCutEdges","showGrid"])
+  for(const id of["showLabels","showCutTint","showGrid"])
     $(id).addEventListener("change",renderSVG);
   $("optCancel").onclick=()=>{optCancelRequested=true;};
   $("patternSel").addEventListener("change",()=>{
